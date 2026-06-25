@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ebpf-probe-config
+  namespace: cloudflow
+data:
+  config.yaml: |
+    probe_id: k8s-node-probe
+    interface: eth0
+    clickhouse_addr: clickhouse.cloudflow.svc.cluster.local
+    clickhouse_user: default
+    clickhouse_password: ""
+    clickhouse_database: cloudflow
+    api_port: "9090"
+    collect_all: true

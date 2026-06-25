@@ -1,0 +1,70 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: cloudflow-ebpf-probe
+  namespace: cloudflow
+  labels:
+    app: cloudflow-ebpf-probe
+spec:
+  selector:
+    matchLabels:
+      app: cloudflow-ebpf-probe
+  template:
+    metadata:
+      labels:
+        app: cloudflow-ebpf-probe
+    spec:
+      hostNetwork: true
+      hostPID: true
+      serviceAccountName: ebpf-probe
+      containers:
+        - name: ebpf-probe
+          image: cloudflow-ebpf-probe:3.0.0
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            privileged: true
+            capabilities:
+              add:
+                - SYS_ADMIN
+                - SYS_RESOURCE
+                - NET_ADMIN
+                - BPF
+                - PERFMON
+          env:
+            - name: PROBE_ID
+              value: "k8s-node-probe"
+            - name: INTERFACE
+              value: "eth0"
+            - name: CLICKHOUSE_ADDR
+              value: "clickhouse.cloudflow.svc.cluster.local"
+            - name: API_PORT
+              value: "9090"
+          volumeMounts:
+            - name: config
+              mountPath: /opt/cloudflow-ebpf-probe/config.yaml
+              subPath: config.yaml
+            - name: sysfs
+              mountPath: /sys
+            - name: debugfs
+              mountPath: /sys/kernel/debug
+          ports:
+            - containerPort: 9090
+              name: api
+              protocol: TCP
+      volumes:
+        - name: config
+          configMap:
+            name: ebpf-probe-config
+        - name: sysfs
+          hostPath:
+            path: /sys
+        - name: debugfs
+          hostPath:
+            path: /sys/kernel/debug
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
+        - key: node-role.kubernetes.io/master
+          operator: Exists
+          effect: NoSchedule

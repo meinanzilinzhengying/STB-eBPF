@@ -1,0 +1,40 @@
+# CloudFlow eBPF Probe
+
+*.o
+*.elf
+cloudflow-ebpf-probe
+cloudflow-ebpf-probe-*
+dist/
+
+# BTF header - generated per target kernel
+bpf/vmlinux.h
+
+# Go build artifacts
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test binary
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# Dependency directories
+vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.log

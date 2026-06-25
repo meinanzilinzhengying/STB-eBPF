@@ -1,0 +1,149 @@
+/* SPDX-License-Identifier: GPL-2.0 */
+/* network_flow.bpf.c - TC ingress/egress eBPF program using perf buffer (legacy) */
+
+#include vmlinux_legacy.h
+#include bpf_helpers.h
+#include bpf_tracing.h
+#include bpf_endian.h
+#include common.h
+
+char __license[] SEC(license) = GPL;
+
+/* Perf buffer map for sending events to userspace */
+struct {
+    __uint(type, BPF_MAP_TYPE_PERF_EVENT_ARRAY);
+    __uint(key_size, sizeof(int));
+    __uint(value_size, sizeof(int));
+    __uint(max_entries, 64);
+} perf_map SEC(.maps);
+
+/*
+ * 从 skb 中读取 TCP payload
+ * 返回实际读取的字节数
+ */
+static __always_inline int read_tcp_payload(struct __sk_buff *skb, void *data_end, void *data, char *payload, int max_len) {
+    struct ethhdr *eth = data;
+    struct iphdr *ip;
+    struct tcphdr *tcp;
+    int ip_hdr_len, tcp_hdr_len, payload_len;
+    long payload_offset;
+
+    // 检查以太网头
+    if ((void *)(eth + 1) > data_end)
+        return 0;
+
+    if (eth->h_proto != bpf_htons(ETH_P_IP))
+        return 0;
+
+    // IP 头
+    ip = (void *)(eth + 1);
+    if ((void *)(ip + 1) > data_end)
+        return 0;
+
+    // 检查是否为 TCP
+    if (ip->protocol != IPPROTO_TCP)
+        return 0;
+
+    // 计算 IP 头长度 (IHL * 4)
+    ip_hdr_len = ip->ihl * 4;
+    
+    // TCP 头
+    tcp = (void *)ip + ip_hdr_len;
+    if ((void *)(tcp + 1) > data_end)
+        return 0;
+
+    // 计算 TCP 头长度 (doff * 4)
+    tcp_hdr_len = tcp->doff * 4;
+    
+    // Payload 偏移量
+    payload_offset = (long)tcp + tcp_hdr_len;
+    
+    // 检查 payload 是否在数据包范围内
+    if (payload_offset >= (long)data_end)
+        return 0;
+
+    // 计算 payload 长度
+    payload_len = data_end - (void *)payload_offset;
+    
+    // 限制最大读取长度
+    if (payload_len > max_len)
+        payload_len = max_len;
+
+    // 读取 payload
+    if (payload_len > 0) {
+        bpf_probe_read(payload, payload_len, (void *)payload_offset);
+    }
+
+    return payload_len;
+}
+
+static __always_inline int handle_packet(struct __sk_buff *skb, __u8 direction) {
+    void *data_end = (void *)(long)skb->data_end;
+    void *data = (void *)(long)skb->data;
+
+    struct ethhdr *eth = data;
+    if ((void *)(eth + 1) > data_end)
+        return TC_ACT_OK;
+
+    if (eth->h_proto != bpf_htons(ETH_P_IP))
+        return TC_ACT_OK;
+
+    struct iphdr *ip = (void *)(eth + 1);
+    if ((void *)(ip + 1) > data_end)
+        return TC_ACT_OK;
+
+    /* Read IP fields using bpf_probe_read (no CO-RE) */
+    struct event e = {};
+    e.timestamp_ns = bpf_ktime_get_ns();
+    e.type = EVENT_TYPE_FLOW;
+    e.pid = 0;
+    e.ppid = 0;
+    
+    /* Use bpf_probe_read to read from kernel memory */
+    bpf_probe_read(&e.src_ip, sizeof(e.src_ip), &ip->saddr);
+    bpf_probe_read(&e.dst_ip, sizeof(e.dst_ip), &ip->daddr);
+    bpf_probe_read(&e.protocol, sizeof(e.protocol), &ip->protocol);
+    
+    e.bytes = skb->len;
+    e.packets = 1;
+    e.latency_ns = 0;
+    e.count = 0;
+    __builtin_memset(e.comm, 0, TASK_COMM_LEN);
+    __builtin_memset(e.data, 0, DATA_LEN);
+    __builtin_memset(e.payload, 0, PAYLOAD_LEN);
+
+    if (ip->protocol == IPPROTO_TCP) {
+        struct tcphdr *tcp = (void *)(ip + 1);
+        if ((void *)(tcp + 1) <= data_end) {
+            bpf_probe_read(&e.src_port, sizeof(e.src_port), &tcp->source);
+            bpf_probe_read(&e.dst_port, sizeof(e.dst_port), &tcp->dest);
+            e.src_port = bpf_ntohs(e.src_port);
+            e.dst_port = bpf_ntohs(e.dst_port);
+            
+            // 读取 TCP payload (用于 HTTP 检测)
+            read_tcp_payload(skb, data_end, data, e.payload, PAYLOAD_LEN);
+        }
+    } else if (ip->protocol == IPPROTO_UDP) {
+        struct udphdr *udp = (void *)(ip + 1);
+        if ((void *)(udp + 1) <= data_end) {
+            bpf_probe_read(&e.src_port, sizeof(e.src_port), &udp->source);
+            bpf_probe_read(&e.dst_port, sizeof(e.dst_port), &udp->dest);
+            e.src_port = bpf_ntohs(e.src_port);
+            e.dst_port = bpf_ntohs(e.dst_port);
+        }
+    }
+
+    /* Send event via perf buffer */
+    bpf_perf_event_output(skb, &perf_map, BPF_F_CURRENT_CPU, &e, sizeof(e));
+    return TC_ACT_OK;
+}
+
+SEC(tc)
+int tc_ingress(struct __sk_buff *skb) {
+    return handle_packet(skb, 0);
+}
+
+SEC(tc)
+int tc_egress(struct __sk_buff *skb) {
+    return handle_packet(skb, 1);
+}

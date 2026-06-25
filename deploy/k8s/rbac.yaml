@@ -1,0 +1,27 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cloudflow-ebpf-probe
+rules:
+  - apiGroups: [""]
+    resources: ["nodes", "pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cloudflow-ebpf-probe
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cloudflow-ebpf-probe
+subjects:
+  - kind: ServiceAccount
+    name: ebpf-probe
+    namespace: cloudflow
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ebpf-probe
+  namespace: cloudflow

@@ -1,0 +1,19 @@
+[Unit]
+Description=CloudFlow eBPF Probe
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/cloudflow-ebpf-probe
+Restart=always
+RestartSec=5
+Environment="PROBE_ID=node-probe"
+Environment="INTERFACE=ens33"
+Environment="CLICKHOUSE_ADDR=127.0.0.1"
+Environment="CLICKHOUSE_USER=default"
+Environment="CLICKHOUSE_DATABASE=cloudflow"
+Environment="API_PORT=9090"
+Environment="COLLECT_ALL=true"
+
+[Install]
+WantedBy=multi-user.target
