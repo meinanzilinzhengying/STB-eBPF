@@ -30,6 +30,103 @@
 #include "tcp_client.h"
 #include "../include/common.h"
 
+/**
+ * parse_dns_payload - Parse DNS query/reply from raw UDP payload
+ *
+ * @payload: Pointer to DNS payload (after UDP header)
+ * @len: Payload length
+ * @flow: Flow event to enrich with DNS info
+ * @is_reply: 1 if this is a DNS reply (src_port == 53)
+ *
+ * Extracts: query name, query type, response code
+ */
+static void parse_dns_payload(const unsigned char *payload, int len,
+                              struct flow_event_t *flow, int is_reply) {
+    if (!payload || len < 12 || !flow) return;
+
+    /* DNS header */
+    unsigned short id = (payload[0] << 8) | payload[1];
+    unsigned short flags = (payload[2] << 8) | payload[3];
+    unsigned short qdcount = (payload[4] << 8) | payload[5];
+    unsigned short ancount = (payload[6] << 8) | payload[7];
+
+    (void)id;
+
+    if (is_reply) {
+        /* Response code: RCODE (bits 0-3 of flags) */
+        int rcode = flags & 0x0F;
+        snprintf(flow->details, sizeof(flow->details),
+                 "dns_reply:rcode=%d,ancount=%d", rcode, ancount);
+    } else if (qdcount > 0) {
+        /* Parse query name */
+        int offset = 12;
+        char name[256] = {0};
+        int name_len = 0;
+        int jumped = 0;
+
+        while (offset < len && payload[offset] != 0 && !jumped) {
+            int label_len = payload[offset];
+            if (label_len >= 0xC0) {
+                /* Compression pointer */
+                jumped = 1;
+                break;
+            }
+            offset++;
+            if (offset + label_len > len) break;
+            if (name_len > 0 && name_len < 255) {
+                name[name_len++] = '.';
+            }
+            for (int i = 0; i < label_len && name_len < 255; i++) {
+                name[name_len++] = payload[offset + i];
+            }
+            offset += label_len;
+        }
+        name[name_len] = '\0';
+
+        /* Query type (after name + null byte + 2 bytes compression) */
+        int type_offset = offset + 1;
+        if (!jumped && type_offset + 1 < len) {
+            unsigned short qtype = (payload[type_offset] << 8) | payload[type_offset + 1];
+            const char *type_str = "UNKNOWN";
+            switch (qtype) {
+                case 1: type_str = "A"; break;
+                case 28: type_str = "AAAA"; break;
+                case 5: type_str = "CNAME"; break;
+                case 12: type_str = "PTR"; break;
+                case 15: type_str = "MX"; break;
+                case 16: type_str = "TXT"; break;
+                case 33: type_str = "SRV"; break;
+            }
+            snprintf(flow->details, sizeof(flow->details),
+                     "dns_query:name=%s,type=%s", name, type_str);
+        } else {
+            snprintf(flow->details, sizeof(flow->details),
+                     "dns_query:name=%s", name);
+        }
+    }
+}
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <signal.h>
+#include <unistd.h>
+#include <time.h>
+#include <net/ethernet.h>
+#include <sys/resource.h>
+
+#include "config.h"
+#include "runtime_config.h"
+#include "bpf_loader.h"
+#include "packet_parser.h"
+#include "proc_net.h"
+#include "flow_tracker.h"
+#include "host_metrics.h"
+#include "anomaly.h"
+#include "serializer.h"
+#include "tcp_client.h"
+#include "../include/common.h"
+
 static volatile int g_stop = 0;
 
 static void sig_handler(int sig) {
@@ -37,18 +134,43 @@ static void sig_handler(int sig) {
     g_stop = 1;
 }
 
-/* Read BPF perf_buffer events from socket */
-static int read_bpf_events(int perf_map_fd,
+/* Read BPF perf_buffer events */
+static int read_bpf_events(struct bpf_loader_status *bpf_status,
                            struct flow_tracker *tracker,
                            const char *probe_id) {
-    /* For v4.0, we read raw packets from the AF_PACKET socket
-     * and parse them in userspace. The BPF program pushes
-     * metadata via perf_buffer, but for simplicity we also
-     * parse the raw packets directly. */
-    (void)perf_map_fd;
-    (void)tracker;
-    (void)probe_id;
-    return 0;
+    if (!bpf_status || bpf_status->perf_map_fd < 0) return 0;
+
+    unsigned char perf_buf[32 * 1024];
+    int nr_events = 0;
+
+    int ret = bpf_loader_read_perf_events(bpf_status, perf_buf,
+                                           sizeof(perf_buf), &nr_events);
+    if (ret <= 0 || nr_events == 0) return 0;
+
+    int event_size = sizeof(struct pkt_event_t);
+    int count = 0;
+
+    for (int i = 0; i < nr_events; i++) {
+        struct pkt_event_t *pkt = (struct pkt_event_t *)(perf_buf + i * event_size);
+
+        if (pkt->timestamp_ns == 0) continue;
+
+        struct flow_event_t flow;
+        packet_to_flow_event(pkt, probe_id, &flow);
+
+        struct flow_key_t key = {
+            .src_ip = pkt->src_ip,
+            .dst_ip = pkt->dst_ip,
+            .src_port = pkt->src_port,
+            .dst_port = pkt->dst_port,
+            .protocol = pkt->protocol,
+            .ip_version = pkt->ip_version,
+        };
+        flow_tracker_update_single(tracker, &key, pkt->pkt_len, probe_id);
+        count++;
+    }
+
+    return count;
 }
 
 /* Read raw packets from AF_PACKET socket and parse */
@@ -173,39 +295,68 @@ int main(int argc, char *argv[]) {
     while (!g_stop) {
         if (use_bpf) {
             /* ===== eBPF Mode ===== */
-            /* Read raw packets from AF_PACKET socket */
-            unsigned char pkt_buf[2048];
             int pkt_this_round = 0;
 
-            while (!g_stop && pkt_this_round < 1000) {
-                int len = recvfrom(bpf_status.socket_fd, pkt_buf, sizeof(pkt_buf),
-                                   MSG_DONTWAIT, NULL, NULL);
-                if (len <= 0) break;
+            /* Primary: read from perf buffer (BPF-enriched events) */
+            if (bpf_status.perf_map_fd >= 0) {
+                pkt_this_round += read_bpf_events(&bpf_status, tracker, cfg.probe_id);
+                total_packets += pkt_this_round;
+            }
 
-                struct pkt_event_t pkt = {0};
-                struct timespec ts;
-                clock_gettime(CLOCK_MONOTONIC, &ts);
-                pkt.timestamp_ns = (__u64)ts.tv_sec * 1000000000ULL + ts.tv_nsec;
+            /* Fallback: read raw packets from AF_PACKET socket */
+            if (pkt_this_round == 0) {
+                unsigned char pkt_buf[2048];
+                while (!g_stop && pkt_this_round < 1000) {
+                    int len = recvfrom(bpf_status.socket_fd, pkt_buf, sizeof(pkt_buf),
+                                       MSG_DONTWAIT, NULL, NULL);
+                    if (len <= 0) break;
 
-                if (packet_parse_raw(pkt_buf, len, &pkt)) {
-                    struct flow_event_t flow;
-                    packet_to_flow_event(&pkt, cfg.probe_id, &flow);
+                    struct pkt_event_t pkt = {0};
+                    struct timespec ts;
+                    clock_gettime(CLOCK_MONOTONIC, &ts);
+                    pkt.timestamp_ns = (__u64)ts.tv_sec * 1000000000ULL + ts.tv_nsec;
 
-                    struct flow_key_t key = {
-                        .src_ip = pkt.src_ip, .dst_ip = pkt.dst_ip,
-                        .src_port = pkt.src_port, .dst_port = pkt.dst_port,
-                        .protocol = pkt.protocol,
-                        .ip_version = pkt.ip_version,
-                    };
-                    flow_tracker_update_single(tracker, &key, pkt.pkt_len, cfg.probe_id);
+                    if (packet_parse_raw(pkt_buf, len, &pkt)) {
+                        struct flow_event_t flow;
+                        packet_to_flow_event(&pkt, cfg.probe_id, &flow);
 
-                    /* Check for anomalies */
-                    struct flow_event_t flow_check;
-                    packet_to_flow_event(&pkt, cfg.probe_id, &flow_check);
-                    anomaly_check_flow(anomaly, &flow_check);
+                        /* DNS payload parsing (UDP port 53) */
+                        if (pkt.protocol == IPPROTO_UDP &&
+                            (pkt.src_port == PORT_DNS || pkt.dst_port == PORT_DNS) &&
+                            len > 42) {
+                            /* Calculate DNS payload offset based on Ethernet header size.
+                             * Standard: ETH(14) + IP(20) + UDP(8) = 42
+                             * VLAN: ETH(14) + VLAN(4) + IP(20) + UDP(8) = 46
+                             * We detect VLAN by checking if eth_proto at offset 12 is 0x8100 */
+                            const unsigned char *eth = pkt_buf;
+                            int eth_hdr_len = 14;
+                            if (len >= 16 && eth[12] == 0x81 && eth[13] == 0x00) {
+                                eth_hdr_len = 18; /* VLAN tagged */
+                            }
+                            int dns_offset = eth_hdr_len + 20 + 8; /* ETH + IP + UDP */
+                            if (len > dns_offset) {
+                                const unsigned char *dns_payload = pkt_buf + dns_offset;
+                                int dns_len = len - dns_offset;
+                                int is_reply = (pkt.src_port == PORT_DNS);
+                                parse_dns_payload(dns_payload, dns_len, &flow, is_reply);
+                            }
+                        }
 
-                    pkt_this_round++;
-                    total_packets++;
+                        struct flow_key_t key = {
+                            .src_ip = pkt.src_ip, .dst_ip = pkt.dst_ip,
+                            .src_port = pkt.src_port, .dst_port = pkt.dst_port,
+                            .protocol = pkt.protocol,
+                            .ip_version = pkt.ip_version,
+                        };
+                        flow_tracker_update_single(tracker, &key, pkt.pkt_len, cfg.probe_id);
+
+                        struct flow_event_t flow_check;
+                        packet_to_flow_event(&pkt, cfg.probe_id, &flow_check);
+                        anomaly_check_flow(anomaly, &flow_check);
+
+                        pkt_this_round++;
+                        total_packets++;
+                    }
                 }
             }
 

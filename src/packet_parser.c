@@ -41,11 +41,19 @@ int packet_parse_raw(const void *data, int len, struct pkt_event_t *evt) {
 
     /* Parse Ethernet header */
     __u16 eth_proto = (p[12] << 8) | p[13];
+    int eth_offset = 14;
+
+    /* Handle 802.1Q VLAN tag (0x8100) */
+    if (eth_proto == 0x8100) {
+        if (len < 18) return 0;
+        eth_proto = (p[16] << 8) | p[17]; /* Real EtherType after VLAN tag */
+        eth_offset = 18; /* Skip: 14 (eth) + 4 (VLAN tag) */
+    }
 
     if (eth_proto == ETH_P_IP) {
         /* ===== IPv4 ===== */
-        if (len < 14 + 20) return 0;
-        const struct iphdr *ip = (const struct iphdr *)(p + 14);
+        if (len < eth_offset + 20) return 0;
+        const struct iphdr *ip = (const struct iphdr *)(p + eth_offset);
 
         if (ntohs(ip->frag_off) & 0x1FFF) return 0;
 
@@ -55,7 +63,7 @@ int packet_parse_raw(const void *data, int len, struct pkt_event_t *evt) {
         evt->ip_version = 4;
 
         int ip_hdr_len = ip->ihl * 4;
-        int transport_offset = 14 + ip_hdr_len;
+        int transport_offset = eth_offset + ip_hdr_len;
 
         if (ip->protocol == IPPROTO_TCP) {
             if (len < transport_offset + 20) return 0;
@@ -93,8 +101,8 @@ int packet_parse_raw(const void *data, int len, struct pkt_event_t *evt) {
 
     } else if (eth_proto == ETH_P_IPV6) {
         /* ===== IPv6 ===== */
-        if (len < 14 + 40) return 0;
-        const struct ipv6hdr *ip6 = (const struct ipv6hdr *)(p + 14);
+        if (len < eth_offset + 40) return 0;
+        const struct ipv6hdr *ip6 = (const struct ipv6hdr *)(p + eth_offset);
 
         /* Map to IPv4-compatible (last 32 bits) */
         evt->src_ip = *((const __u32 *)&ip6->saddr.s6_addr[12]);
@@ -102,7 +110,7 @@ int packet_parse_raw(const void *data, int len, struct pkt_event_t *evt) {
         evt->protocol = ip6->nexthdr;
         evt->ip_version = 6;
 
-        int transport_offset = 14 + 40;
+        int transport_offset = eth_offset + 40;
 
         if (ip6->nexthdr == IPPROTO_TCP) {
             if (len < transport_offset + 20) return 0;
@@ -172,11 +180,17 @@ void packet_to_flow_event(const struct pkt_event_t *pkt,
     if (pkt->protocol == IPPROTO_UDP &&
         (pkt->src_port == PORT_DNS || pkt->dst_port == PORT_DNS)) {
         strncpy(flow->category, CAT_DNS, sizeof(flow->category) - 1);
-        if (pkt->dst_port == PORT_DNS)
+        if (pkt->dst_port == PORT_DNS) {
             strncpy(flow->event_type, EVT_DNS_QUERY, sizeof(flow->event_type) - 1);
-        else
+        } else {
             strncpy(flow->event_type, EVT_DNS_REPLY, sizeof(flow->event_type) - 1);
+        }
+
+        /* DNS payload is available after UDP header (8 bytes) in raw packet.
+         * We can't access raw packet here, but we can use the details field
+         * to encode DNS info from the flow. For now, mark as dns. */
         strncpy(flow->tags, "dns", sizeof(flow->tags) - 1);
+        strncpy(flow->service, "DNS", sizeof(flow->service) - 1);
         return;
     }
 
