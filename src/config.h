@@ -11,7 +11,7 @@
 /* ==================== Network Configuration ==================== */
 
 /* Windows relay server address and port */
-#define RELAY_SERVER_IP      "10.115.107.91"
+#define RELAY_SERVER_IP      "10.115.69.95"
 #define RELAY_SERVER_PORT    9104
 
 /* Probe identifier (reported to relay server) */
