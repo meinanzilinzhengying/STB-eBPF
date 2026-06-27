@@ -106,6 +106,61 @@ static void parse_dns_payload(const unsigned char *payload, int len,
     }
 }
 
+/**
+ * extract_tcp_seq_num - Extract TCP sequence number from raw packet
+ *
+ * Manually parses TCP header fields to avoid linux/tcp.h conflicts.
+ */
+static int extract_tcp_seq_num(const unsigned char *pkt_buf, int len,
+                                const struct pkt_event_t *pkt,
+                                __u32 *seq_num, __u16 *payload_len,
+                                __u8 *tcp_flags) {
+    if (!pkt_buf || !pkt || !seq_num || !payload_len || !tcp_flags) return 0;
+    if (pkt->protocol != IPPROTO_TCP) return 0;
+
+    /* Calculate Ethernet header offset (with VLAN support) */
+    int eth_offset = 14;
+    if (len >= 16 && pkt_buf[12] == 0x81 && pkt_buf[13] == 0x00) {
+        eth_offset = 18;
+    }
+
+    /* Calculate IP header offset */
+    int ip_offset = eth_offset;
+    int ip_hdr_len = 20;
+    if (pkt->ip_version == 4) {
+        ip_offset = eth_offset;
+        if (len < ip_offset + 20) return 0;
+        ip_hdr_len = (pkt_buf[ip_offset] & 0x0F) * 4;
+    } else if (pkt->ip_version == 6) {
+        ip_offset = eth_offset + 40;
+        ip_hdr_len = 0;
+    } else {
+        return 0;
+    }
+
+    int tcp_offset = ip_offset + ip_hdr_len;
+    if (len < tcp_offset + 20) return 0;
+
+    /* Parse TCP header manually (avoid linux/tcp.h conflicts) */
+    const unsigned char *tcp = pkt_buf + tcp_offset;
+    *seq_num = ((unsigned int)tcp[4] << 24) | ((unsigned int)tcp[5] << 16) |
+               ((unsigned int)tcp[6] << 8) | (unsigned int)tcp[7];
+
+    int tcp_hdr_len = ((tcp[12] >> 4) & 0x0F) * 4;
+    int total_hdr = tcp_offset + tcp_hdr_len;
+    *payload_len = (total_hdr < len) ? (len - total_hdr) : 0;
+
+    __u8 flags = tcp[13]; /* TCP flags byte */
+    __u8 our_flags = 0;
+    if (flags & 0x02) our_flags |= 0x02; /* SYN */
+    if (flags & 0x10) our_flags |= 0x10; /* ACK */
+    if (flags & 0x01) our_flags |= 0x01; /* FIN */
+    if (flags & 0x04) our_flags |= 0x04; /* RST */
+    *tcp_flags = our_flags;
+
+    return 1;
+}
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -349,6 +404,33 @@ int main(int argc, char *argv[]) {
                             .ip_version = pkt.ip_version,
                         };
                         flow_tracker_update_single(tracker, &key, pkt.pkt_len, cfg.probe_id);
+
+                        /* TCP retransmission detection */
+                        if (pkt.protocol == IPPROTO_TCP) {
+                            __u32 seq_num = 0;
+                            __u16 payload_len = 0;
+                            __u8 tcp_flags_raw = 0;
+                            if (extract_tcp_seq_num(pkt_buf, len, &pkt,
+                                                    &seq_num, &payload_len, &tcp_flags_raw)) {
+                                int is_retransmit = 0, is_dup_ack = 0;
+                                flow_tracker_check_tcp_retransmit(tracker, &key,
+                                                                  seq_num, payload_len,
+                                                                  tcp_flags_raw,
+                                                                  &is_retransmit, &is_dup_ack);
+                                if (is_retransmit) {
+                                    flow.retransmits = 1;
+                                    strncpy(flow.event_type, "retransmit",
+                                            sizeof(flow.event_type) - 1);
+                                    strncpy(flow.tags, "tcp,retransmit",
+                                            sizeof(flow.tags) - 1);
+                                    snprintf(flow.details, sizeof(flow.details),
+                                             "tcp_retransmit:seq=%u", seq_num);
+                                }
+                                if (is_dup_ack) {
+                                    flow.dup_acks = 1;
+                                }
+                            }
+                        }
 
                         struct flow_event_t flow_check;
                         packet_to_flow_event(&pkt, cfg.probe_id, &flow_check);

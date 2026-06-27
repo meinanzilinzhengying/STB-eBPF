@@ -197,3 +197,75 @@ void flow_tracker_get_stats(struct flow_tracker *ft,
     if (active_flows) *active_flows = ft->active_count;
     if (total_events) *total_events = ft->event_count;
 }
+
+/**
+ * flow_tracker_check_tcp_retransmit - Detect TCP retransmissions and duplicate ACKs
+ *
+ * Algorithm:
+ * 1. For data packets (ACK not set or has payload): compare seq with expected
+ *    - seq < expected → retransmission
+ *    - seq > expected → out-of-order (future improvement)
+ *    - seq == expected → normal, update expected = seq + payload_len
+ * 2. For pure ACK packets (ACK set, no payload):
+ *    - If same ACK as previous → duplicate ACK (possible loss indication)
+ * 3. SYN/FIN consume one sequence number
+ */
+int flow_tracker_check_tcp_retransmit(struct flow_tracker *ft,
+                                       const struct flow_key_t *key,
+                                       __u32 seq_num, __u16 pkt_len,
+                                       __u8 tcp_flags,
+                                       int *is_retransmit, int *is_dup_ack) {
+    if (!ft || !key || !is_retransmit || !is_dup_ack) return -1;
+    *is_retransmit = 0;
+    *is_dup_ack = 0;
+
+    struct flow_record *rec = find_record(ft, key);
+    if (!rec) return -1;
+
+    /* SYN and FIN consume one sequence number */
+    int consumes_seq = (tcp_flags & TCP_FLAG_SYN) || (tcp_flags & TCP_FLAG_FIN);
+    int has_ack = (tcp_flags & TCP_FLAG_ACK);
+    int has_data = (pkt_len > 0 && !has_ack) || (pkt_len > 0 && has_ack);
+
+    /* Track last ACK for duplicate detection */
+    static __u32 last_ack_per_flow[4096];
+    static int flow_idx = 0;
+
+    if (consumes_seq) {
+        /* SYN/FIN: just advance expected sequence */
+        if (rec->value.seq_expected == 0) {
+            /* First SYN: initialize expected sequence */
+            rec->value.seq_expected = seq_num + 1;
+        } else {
+            rec->value.seq_expected = seq_num + 1;
+        }
+        return 0;
+    }
+
+    if (has_data || (!has_ack && pkt_len > 0)) {
+        /* Data packet: check for retransmission */
+        if (rec->value.seq_expected != 0 && seq_num < rec->value.seq_expected) {
+            /* Retransmission: sequence number is behind expected */
+            *is_retransmit = 1;
+            rec->value.retransmits++;
+            return 0;
+        }
+        /* Normal packet: update expected sequence */
+        if (pkt_len > 0) {
+            rec->value.seq_expected = seq_num + pkt_len;
+        }
+    }
+
+    if (has_ack && pkt_len == 0) {
+        /* Pure ACK: check for duplicate */
+        int idx = flow_idx % 4096;
+        if (last_ack_per_flow[idx] == seq_num && seq_num != 0) {
+            *is_dup_ack = 1;
+            rec->value.dup_acks++;
+        }
+        last_ack_per_flow[idx] = seq_num;
+        flow_idx++;
+    }
+
+    return 0;
+}

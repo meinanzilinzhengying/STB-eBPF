@@ -18,6 +18,7 @@ int serialize_flow_event(const struct flow_event_t *event,
         "\"tcp_flags\":%u,\"pkt_len\":%u,"
         "\"bytes\":%llu,\"packets\":%llu,"
         "\"latency_us\":%llu,\"bandwidth_bps\":%llu,"
+        "\"retransmits\":%u,\"dup_acks\":%u,"
         "\"anomaly\":%u,\"payload_type\":%u,\"pid\":%u,"
         "\"service\":\"%s\",\"details\":\"%s\",\"tags\":\"%s\"}",
         (unsigned long long)event->timestamp_ns, probe_id,
@@ -30,6 +31,7 @@ int serialize_flow_event(const struct flow_event_t *event,
         (unsigned long long)event->packets,
         (unsigned long long)event->latency_us,
         (unsigned long long)event->bandwidth_bps,
+        event->retransmits, event->dup_acks,
         event->anomaly, event->payload_type, event->pid,
         event->service, event->details, event->tags);
 }

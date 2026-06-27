@@ -19,4 +19,23 @@ void flow_tracker_cleanup(struct flow_tracker *ft, __u64 max_age_ns);
 void flow_tracker_get_stats(struct flow_tracker *ft,
                             int *active_flows, int *total_events);
 
+/**
+ * flow_tracker_check_tcp_retransmit - Check for TCP retransmission
+ *
+ * @ft: Flow tracker
+ * @key: Flow key (5-tuple)
+ * @seq_num: TCP sequence number from packet
+ * @pkt_len: Packet payload length
+ * @tcp_flags: TCP flags (SYN/ACK/FIN/RST)
+ * @is_retransmit: Output: 1 if retransmission detected
+ * @is_dup_ack: Output: 1 if duplicate ACK detected
+ *
+ * Returns: 0 on success
+ */
+int flow_tracker_check_tcp_retransmit(struct flow_tracker *ft,
+                                       const struct flow_key_t *key,
+                                       __u32 seq_num, __u16 pkt_len,
+                                       __u8 tcp_flags,
+                                       int *is_retransmit, int *is_dup_ack);
+
 #endif

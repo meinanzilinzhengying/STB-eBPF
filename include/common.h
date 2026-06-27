@@ -107,6 +107,10 @@ struct flow_value_t {
     __u16 max_pkt_size;
     __u16 min_pkt_size;
     __u32 tcp_flags_seen;  /* bitmask of all TCP flags seen */
+    __u32 retransmits;     /* TCP retransmission count */
+    __u32 dup_acks;        /* duplicate ACK count */
+    __u32 out_of_order;    /* out-of-order packet count */
+    __u32 seq_expected;    /* next expected sequence number */
 };
 
 struct flow_event_t {
@@ -128,6 +132,8 @@ struct flow_event_t {
     __u64 packets;
     __u64 latency_us;     /* SYN→SYN-ACK latency in microseconds */
     __u64 bandwidth_bps;  /* instantaneous bandwidth in bits/sec */
+    __u32 retransmits;    /* TCP retransmission count */
+    __u32 dup_acks;       /* duplicate ACK count */
     __u32 pid;
     char  service[32];
     char  details[128];
