@@ -561,19 +561,27 @@ int main(int argc, char *argv[]) {
             }
 
             /* Also poll /proc/net for connection state enrichment (IPv4 + IPv6) */
-            int tcp4 = proc_net_read_tcp(entries, MAX_FLOWS / 4);
-            int udp4 = proc_net_read_udp(entries + tcp4, MAX_FLOWS / 4 - tcp4);
-            int tcp6 = proc_net_read_tcp6(entries + tcp4 + udp4, MAX_FLOWS / 4);
-            int udp6 = proc_net_read_udp6(entries + tcp4 + udp4 + tcp6, MAX_FLOWS / 4 - tcp6);
-            flow_tracker_update(tracker, entries, tcp4 + udp4 + tcp6 + udp6);
+            int quarter = MAX_FLOWS / 4;
+            int tcp4 = proc_net_read_tcp(entries, quarter);
+            int udp4 = proc_net_read_udp(entries + tcp4, quarter - (tcp4 < quarter ? tcp4 : quarter));
+            int tcp6 = proc_net_read_tcp6(entries + tcp4 + udp4, quarter);
+            int udp6 = proc_net_read_udp6(entries + tcp4 + udp4 + tcp6,
+                                          quarter - (tcp6 < quarter ? tcp6 : quarter));
+            int total_entries = tcp4 + udp4 + tcp6 + udp6;
+            if (total_entries > MAX_FLOWS) total_entries = MAX_FLOWS;
+            flow_tracker_update(tracker, entries, total_entries);
 
         } else {
             /* ===== /proc/net Fallback Mode (IPv4 + IPv6) ===== */
-            int tcp4 = proc_net_read_tcp(entries, MAX_FLOWS / 4);
-            int udp4 = proc_net_read_udp(entries + tcp4, MAX_FLOWS / 4 - tcp4);
-            int tcp6 = proc_net_read_tcp6(entries + tcp4 + udp4, MAX_FLOWS / 4);
-            int udp6 = proc_net_read_udp6(entries + tcp4 + udp4 + tcp6, MAX_FLOWS / 4 - tcp6);
-            flow_tracker_update(tracker, entries, tcp4 + udp4 + tcp6 + udp6);
+            int quarter = MAX_FLOWS / 4;
+            int tcp4 = proc_net_read_tcp(entries, quarter);
+            int udp4 = proc_net_read_udp(entries + tcp4, quarter - (tcp4 < quarter ? tcp4 : quarter));
+            int tcp6 = proc_net_read_tcp6(entries + tcp4 + udp4, quarter);
+            int udp6 = proc_net_read_udp6(entries + tcp4 + udp4 + tcp6,
+                                          quarter - (tcp6 < quarter ? tcp6 : quarter));
+            int total_entries = tcp4 + udp4 + tcp6 + udp6;
+            if (total_entries > MAX_FLOWS) total_entries = MAX_FLOWS;
+            flow_tracker_update(tracker, entries, total_entries);
         }
 
         /* Host metrics every 30s */

@@ -113,8 +113,14 @@ int flow_tracker_update(struct flow_tracker *ft,
             ev.dst_port = key.dst_port;
             ev.bytes = delta_bytes;
             ev.packets = 1;
-            strncpy(ev.protocol, entries[i].protocol == 6 ? PROTO_TCP : PROTO_UDP,
-                    sizeof(ev.protocol) - 1);
+
+            /* Protocol string mapping */
+            switch (entries[i].protocol) {
+                case 6:  strncpy(ev.protocol, PROTO_TCP, sizeof(ev.protocol) - 1); break;
+                case 17: strncpy(ev.protocol, PROTO_UDP, sizeof(ev.protocol) - 1); break;
+                case 1:  strncpy(ev.protocol, PROTO_ICMP, sizeof(ev.protocol) - 1); break;
+                default: snprintf(ev.protocol, sizeof(ev.protocol), "%d", entries[i].protocol); break;
+            }
 
             if (IS_MULTICAST(key.dst_ip)) {
                 strncpy(ev.tags, "iptv,multicast", sizeof(ev.tags) - 1);
