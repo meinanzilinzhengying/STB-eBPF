@@ -107,6 +107,97 @@ static void parse_dns_payload(const unsigned char *payload, int len,
 }
 
 /**
+ * parse_http_payload - Parse HTTP request/response from TCP payload
+ *
+ * Extracts: method, URL path, Host header, status code, Content-Type
+ * Only works for unencrypted HTTP (port 80).
+ */
+static void parse_http_payload(const unsigned char *payload, int len,
+                               struct flow_event_t *flow, int is_response) {
+    if (!payload || len < 10 || !flow) return;
+
+    /* Ensure null-terminated for string parsing */
+    char buf[2048];
+    int copy_len = (len < (int)sizeof(buf) - 1) ? len : (int)sizeof(buf) - 1;
+    memcpy(buf, payload, copy_len);
+    buf[copy_len] = '\0';
+
+    if (is_response) {
+        /* HTTP response: "HTTP/1.x NNN ..." */
+        if (buf[0] == 'H' && buf[1] == 'T' && buf[2] == 'T' && buf[3] == 'P') {
+            int status_code = 0;
+            char *sp = strchr(buf, ' ');
+            if (sp) {
+                status_code = atoi(sp + 1);
+            }
+
+            /* Find Content-Type header */
+            char *ct = strcasestr(buf, "Content-Type:");
+            if (!ct) ct = strcasestr(buf, "content-type:");
+            char ct_value[128] = {0};
+            if (ct) {
+                ct += 13; /* skip "Content-Type:" */
+                while (*ct == ' ') ct++;
+                int i = 0;
+                while (*ct && *ct != '\r' && *ct != '\n' && i < 127) {
+                    ct_value[i++] = *ct++;
+                }
+                ct_value[i] = '\0';
+            }
+
+            snprintf(flow->details, sizeof(flow->details),
+                     "http_resp:status=%d,content_type=%s",
+                     status_code, ct_value[0] ? ct_value : "unknown");
+            strncpy(flow->service, "HTTP", sizeof(flow->service) - 1);
+        }
+    } else {
+        /* HTTP request: "METHOD /path HTTP/1.x" */
+        char method[16] = {0};
+        char path[256] = {0};
+        char host[256] = {0};
+
+        /* Extract method */
+        char *sp = strchr(buf, ' ');
+        if (sp) {
+            int method_len = sp - buf;
+            if (method_len > 15) method_len = 15;
+            memcpy(method, buf, method_len);
+            method[method_len] = '\0';
+
+            /* Extract path */
+            char *path_start = sp + 1;
+            char *path_end = strchr(path_start, ' ');
+            if (path_end) {
+                int path_len = path_end - path_start;
+                if (path_len > 255) path_len = 255;
+                memcpy(path, path_start, path_len);
+                path[path_len] = '\0';
+            }
+        }
+
+        /* Extract Host header */
+        char *host_header = strcasestr(buf, "Host:");
+        if (!host_header) host_header = strcasestr(buf, "host:");
+        if (host_header) {
+            host_header += 5; /* skip "Host:" */
+            while (*host_header == ' ') host_header++;
+            int i = 0;
+            while (*host_header && *host_header != '\r' && *host_header != '\n' && i < 255) {
+                host[i++] = *host_header++;
+            }
+            host[i] = '\0';
+        }
+
+        snprintf(flow->details, sizeof(flow->details),
+                 "http_req:method=%s,path=%s,host=%s",
+                 method[0] ? method : "UNKNOWN",
+                 path[0] ? path : "/",
+                 host[0] ? host : "unknown");
+        strncpy(flow->service, "HTTP", sizeof(flow->service) - 1);
+    }
+}
+
+/**
  * extract_tcp_seq_num - Extract TCP sequence number from raw packet
  *
  * Manually parses TCP header fields to avoid linux/tcp.h conflicts.
@@ -358,8 +449,8 @@ int main(int argc, char *argv[]) {
                 total_packets += pkt_this_round;
             }
 
-            /* Fallback: read raw packets from AF_PACKET socket */
-            if (pkt_this_round == 0) {
+            /* Always read raw packets for protocol-specific parsing (DNS, HTTP, retransmit) */
+            {
                 unsigned char pkt_buf[2048];
                 while (!g_stop && pkt_this_round < 1000) {
                     int len = recvfrom(bpf_status.socket_fd, pkt_buf, sizeof(pkt_buf),
@@ -394,6 +485,33 @@ int main(int argc, char *argv[]) {
                                 int dns_len = len - dns_offset;
                                 int is_reply = (pkt.src_port == PORT_DNS);
                                 parse_dns_payload(dns_payload, dns_len, &flow, is_reply);
+                            }
+                        }
+
+                        /* HTTP payload parsing (TCP port 80) */
+                        if (pkt.protocol == IPPROTO_TCP &&
+                            (pkt.src_port == PORT_HTTP || pkt.dst_port == PORT_HTTP) &&
+                            len > 54) {
+                            const unsigned char *eth = pkt_buf;
+                            int eth_hdr_len = 14;
+                            if (len >= 16 && eth[12] == 0x81 && eth[13] == 0x00) {
+                                eth_hdr_len = 18;
+                            }
+                            int ip_hdr_len = 20;
+                            if (pkt.ip_version == 6) {
+                                ip_hdr_len = 0;
+                                eth_hdr_len += 40; /* IPv6 header */
+                            }
+                            int tcp_offset = eth_hdr_len + ip_hdr_len;
+                            if (len >= tcp_offset + 20) {
+                                int tcp_hdr_len = ((eth[tcp_offset + 12] >> 4) & 0x0F) * 4;
+                                int http_offset = tcp_offset + tcp_hdr_len;
+                                if (len > http_offset) {
+                                    const unsigned char *http_payload = pkt_buf + http_offset;
+                                    int http_len = len - http_offset;
+                                    int is_response = (pkt.src_port == PORT_HTTP);
+                                    parse_http_payload(http_payload, http_len, &flow, is_response);
+                                }
                             }
                         }
 
