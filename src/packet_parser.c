@@ -129,6 +129,8 @@ void packet_to_flow_event(const struct pkt_event_t *pkt,
     flow->bytes = pkt->pkt_len;
     flow->packets = 1;
     flow->pid = pkt->pid;
+    flow->ip_version = pkt->ip_version;
+    flow->payload_type = pkt->payload_type;
 
     /* Protocol string */
     if (pkt->protocol == IPPROTO_TCP)
@@ -155,7 +157,7 @@ void packet_to_flow_event(const struct pkt_event_t *pkt,
     /* Detect ICMP */
     if (pkt->protocol == IPPROTO_ICMP) {
         strncpy(flow->category, CAT_ICMP, sizeof(flow->category) - 1);
-        if (pkt->dst_port == 8) { /* Echo request */
+        if (pkt->dst_port == 8) {
             strncpy(flow->event_type, EVT_ICMP_ECHO, sizeof(flow->event_type) - 1);
             strncpy(flow->service, "ping", sizeof(flow->service) - 1);
         }
@@ -171,11 +173,27 @@ void packet_to_flow_event(const struct pkt_event_t *pkt,
         return;
     }
 
-    /* Detect HTTP */
-    if (pkt->protocol == IPPROTO_TCP &&
-        (pkt->src_port == PORT_HTTP || pkt->dst_port == PORT_HTTP ||
-         pkt->src_port == PORT_HTTPS || pkt->dst_port == PORT_HTTPS)) {
+    /* Detect HTTP from payload type */
+    if (pkt->payload_type == PAYLOAD_HTTP_REQ) {
         strncpy(flow->service, "HTTP", sizeof(flow->service) - 1);
+        strncpy(flow->tags, "http,request", sizeof(flow->tags) - 1);
+    } else if (pkt->payload_type == PAYLOAD_HTTP_RESP) {
+        strncpy(flow->service, "HTTP", sizeof(flow->service) - 1);
+        strncpy(flow->tags, "http,response", sizeof(flow->tags) - 1);
+    } else if (pkt->protocol == IPPROTO_TCP &&
+               (pkt->src_port == PORT_HTTP || pkt->dst_port == PORT_HTTP ||
+                pkt->src_port == PORT_HTTPS || pkt->dst_port == PORT_HTTPS)) {
+        strncpy(flow->service, "HTTP", sizeof(flow->service) - 1);
+    }
+
+    /* TCP connection lifecycle events */
+    if (pkt->tcp_flags & TCP_FLAG_SYN) {
+        strncpy(flow->event_type, EVT_CONNECT, sizeof(flow->event_type) - 1);
+        return;
+    }
+    if (pkt->tcp_flags & TCP_FLAG_FIN || pkt->tcp_flags & TCP_FLAG_RST) {
+        strncpy(flow->event_type, EVT_DISCONNECT, sizeof(flow->event_type) - 1);
+        return;
     }
 
     /* Default: network flow */

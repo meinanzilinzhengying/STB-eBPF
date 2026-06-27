@@ -1,11 +1,12 @@
 /**
- * stb_socket_filter.bpf.c - BPF socket filter v4.1
+ * stb_socket_filter.bpf.c - BPF socket filter v4.2
  *
  * Complete eBPF packet parser supporting:
  * - IPv4 + IPv6
  * - TCP (with state flags: SYN/FIN/RST)
  * - UDP (with DNS port 53 detection)
  * - ICMP
+ * - HTTP method detection (GET/POST/PUT/DELETE from payload)
  * - Process correlation via bpf_get_current_pid_tgid()
  * - Connection latency via SYN→SYN-ACK timing (hash map)
  *
@@ -38,15 +39,17 @@
 
 struct pkt_event_t {
     __u64 timestamp_ns;
-    __u32 src_ip;           /* IPv4 or mapped IPv4 */
+    __u32 src_ip;
     __u32 dst_ip;
     __u16 src_port;
     __u16 dst_port;
-    __u8  protocol;         /* TCP=6, UDP=17, ICMP=1 */
-    __u8  tcp_flags;        /* SYN=0x02, ACK=0x10, FIN=0x01, RST=0x04 */
+    __u8  protocol;
+    __u8  tcp_flags;
     __u16 pkt_len;
     __u32 ifindex;
-    __u32 pid;              /* Process ID (from bpf_get_current_pid_tgid) */
+    __u32 pid;
+    __u8  payload_type;   /* 0=none, 1=HTTP_REQ, 2=HTTP_RESP */
+    __u8  _pad[3];
 } __attribute__((packed));
 
 /* ==================== BPF Maps ==================== */
@@ -86,6 +89,53 @@ static __always_inline __u64 flow_hash(__u32 src, __u32 dst, __u16 sp, __u16 dp)
     h = h * 31 + sp;
     h = h * 31 + dp;
     return h;
+}
+
+/* ==================== HTTP Detection ==================== */
+
+#define PAYLOAD_NONE    0
+#define PAYLOAD_HTTP_REQ  1
+#define PAYLOAD_HTTP_RESP 2
+
+/**
+ * detect_http - Detect HTTP method/status from TCP payload
+ *
+ * Reads first 8 bytes of TCP payload to check for:
+ * - "GET ", "POST ", "PUT ", "DELETE ", "HEAD " → HTTP request
+ * - "HTTP/" → HTTP response
+ *
+ * Note: BPF verifier limits data access. We only read first 8 bytes.
+ */
+static __always_inline int detect_http(struct __sk_buff *skb,
+                                        void *payload_start) {
+    void *data_end = (void *)(long)skb->data_end;
+
+    /* Need at least 8 bytes of payload for detection */
+    if (payload_start + 8 > data_end)
+        return PAYLOAD_NONE;
+
+    /* Read 8 bytes of payload */
+    __u8 buf[8];
+    bpf_probe_read(buf, sizeof(buf), payload_start);
+
+    /* Check for HTTP methods: GET , POST, PUT , DELE, HEAD */
+    if (buf[0] == 'G' && buf[1] == 'E' && buf[2] == 'T' && buf[3] == ' ')
+        return PAYLOAD_HTTP_REQ;
+    if (buf[0] == 'P' && buf[1] == 'O' && buf[2] == 'S' && buf[3] == 'T')
+        return PAYLOAD_HTTP_REQ;
+    if (buf[0] == 'P' && buf[1] == 'U' && buf[2] == 'T' && buf[3] == ' ')
+        return PAYLOAD_HTTP_REQ;
+    if (buf[0] == 'D' && buf[1] == 'E' && buf[2] == 'L' && buf[3] == 'E')
+        return PAYLOAD_HTTP_REQ;
+    if (buf[0] == 'H' && buf[1] == 'E' && buf[2] == 'A' && buf[3] == 'D')
+        return PAYLOAD_HTTP_REQ;
+
+    /* Check for HTTP response: HTTP/ */
+    if (buf[0] == 'H' && buf[1] == 'T' && buf[2] == 'T' && buf[3] == 'P'
+        && buf[4] == '/')
+        return PAYLOAD_HTTP_RESP;
+
+    return PAYLOAD_NONE;
 }
 
 /* ==================== IPv4 Parser ==================== */
@@ -156,6 +206,11 @@ static __always_inline int parse_ipv4(struct __sk_buff *skb,
             };
             bpf_map_delete_elem(&syn_timestamps, &key);
         }
+
+        /* Detect HTTP in TCP payload (after header) */
+        int tcp_hdr_len = tcp->doff * 4;
+        void *payload = transport + tcp_hdr_len;
+        evt->payload_type = detect_http(skb, payload);
 
     } else if (ip->protocol == IPPROTO_UDP) {
         struct udphdr *udp = transport;

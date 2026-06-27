@@ -20,6 +20,7 @@ struct pkt_event_t {
     __u32 ifindex;
     __u32 pid;
     __u8  ip_version;   /* 4 or 6 */
+    __u8  payload_type; /* 0=none, 1=HTTP_REQ, 2=HTTP_RESP */
 };
 
 /**

@@ -15,7 +15,7 @@
 
 # Project info
 PROJECT_NAME := stb_ebpf_probe
-VERSION := 4.1.0
+VERSION := 4.2.0
 
 # Directories
 ROOT_DIR := $(shell pwd)

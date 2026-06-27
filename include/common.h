@@ -36,6 +36,17 @@ typedef int64_t  __s64;
 #define PROTO_UDP   "UDP"
 #define PROTO_ICMP  "ICMP"
 
+/* Payload types */
+#define PAYLOAD_NONE      0
+#define PAYLOAD_HTTP_REQ  1
+#define PAYLOAD_HTTP_RESP 2
+
+/* Anomaly types */
+#define ANOMALY_NONE     0
+#define ANOMALY_SPIKE    1
+#define ANOMALY_SCAN     2
+#define ANOMALY_DROP     3
+
 /* TCP flags */
 #define TCP_FLAG_SYN  0x02
 #define TCP_FLAG_ACK  0x10
@@ -98,10 +109,13 @@ struct flow_event_t {
     char  protocol[8];
     __u8  ip_version;     /* 4 or 6 */
     __u8  tcp_flags;      /* SYN/ACK/FIN/RST bitmask */
+    __u8  payload_type;   /* 0=none, 1=HTTP_REQ, 2=HTTP_RESP */
+    __u8  anomaly;        /* 0=normal, 1=spike, 2=port_scan */
     __u16 pkt_len;
     __u64 bytes;
     __u64 packets;
     __u64 latency_us;     /* SYN→SYN-ACK latency in microseconds */
+    __u64 bandwidth_bps;  /* instantaneous bandwidth in bits/sec */
     __u32 pid;
     char  service[32];
     char  details[128];

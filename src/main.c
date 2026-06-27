@@ -1,12 +1,12 @@
 /**
- * main.c - STB eBPF Probe v4.0 Entry Point
+ * main.c - STB eBPF Probe v4.2 Entry Point
  *
  * Architecture:
  *   Primary: BPF socket filter → packet capture → flow aggregation
  *   Fallback: /proc/net polling → connection tracking
  *
- * Captures ALL IPv4 packets via AF_PACKET raw socket with BPF filter.
- * Falls back to /proc/net if BPF is unavailable.
+ * eBPF captures ALL IPv4+IPv6 packets via AF_PACKET raw socket.
+ * Includes: HTTP detection, DNS, ICMP, TCP state, latency, anomaly detection.
  */
 
 #include <stdio.h>
@@ -24,6 +24,7 @@
 #include "proc_net.h"
 #include "flow_tracker.h"
 #include "host_metrics.h"
+#include "anomaly.h"
 #include "serializer.h"
 #include "tcp_client.h"
 #include "../include/common.h"
@@ -119,11 +120,12 @@ int main(int argc, char *argv[]) {
     if (env_iface && env_iface[0]) ifname = env_iface;
 
     printf("=============================================\n");
-    printf("STB eBPF Probe v4.1 - eBPF Network Monitor\n");
+    printf("STB eBPF Probe v4.2 - eBPF Network Monitor\n");
     printf("Relay: %s:%d\n", cfg.relay_server_ip, cfg.relay_server_port);
     printf("Probe ID: %s\n", cfg.probe_id);
     printf("Interface: %s\n", ifname);
-    printf("Protocols: IPv4 + IPv6, TCP + UDP + ICMP + DNS\n");
+    printf("Protocols: IPv4+IPv6, TCP+UDP+ICMP+DNS+HTTP\n");
+    printf("Features: latency, bandwidth, anomaly detection\n");
     printf("Mode: eBPF socket filter + /proc/net fallback\n");
     printf("=============================================\n");
 
@@ -139,6 +141,9 @@ int main(int argc, char *argv[]) {
                                               cfg.relay_server_port, 1);
     if (!tcp) { fprintf(stderr, "Failed to create TCP client\n"); return 1; }
     tcp_client_connect(tcp);
+
+    struct anomaly_detector *anomaly = anomaly_detector_create();
+    if (!anomaly) { fprintf(stderr, "Failed to create anomaly detector\n"); return 1; }
 
     /* Try to load BPF socket filter */
     struct bpf_loader_status bpf_status;
@@ -192,6 +197,12 @@ int main(int argc, char *argv[]) {
                         .ip_version = pkt.ip_version,
                     };
                     flow_tracker_update_single(tracker, &key, pkt.pkt_len, cfg.probe_id);
+
+                    /* Check for anomalies */
+                    struct flow_event_t flow_check;
+                    packet_to_flow_event(&pkt, cfg.probe_id, &flow_check);
+                    anomaly_check_flow(anomaly, &flow_check);
+
                     pkt_this_round++;
                     total_packets++;
                 }
@@ -249,6 +260,7 @@ int main(int argc, char *argv[]) {
             flow_tracker_get_stats(tracker, &active, &pending);
             printf("[STATS] mode=%s active_flows=%d events=%llu pkts=%llu\n",
                    use_bpf ? "eBPF" : "proc.net", active, total_events, total_packets);
+            anomaly_detector_print_stats(anomaly);
         }
 
         usleep(POLL_INTERVAL_MS * 1000);
@@ -257,6 +269,7 @@ int main(int argc, char *argv[]) {
     printf("[INFO] Shutting down (events=%llu packets=%llu)\n", total_events, total_packets);
 
     if (use_bpf) bpf_loader_cleanup(&bpf_status);
+    anomaly_detector_destroy(anomaly);
     flow_tracker_destroy(tracker);
     tcp_client_cleanup(tcp);
     return 0;
