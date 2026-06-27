@@ -73,14 +73,14 @@ static int parse_bpf_elf(const char *path, struct elf_bpf_prog *prog) {
 
     fread(&e_type, 2, 1, f);
     fread(&e_machine, 2, 1, f);
-    fseek(f, 8 + 8 + 8, SEEK_CUR); /* skip e_entry, e_phoff, e_shoff is next */
+    fseek(f, 4 + 8 + 8, SEEK_CUR); /* skip e_version(4), e_entry(8), e_phoff(8) */
     fread(&e_shoff, 8, 1, f);
-    fseek(f, 4 + 2, SEEK_CUR); /* skip e_flags, e_ehsize */
+    fseek(f, 4 + 2 + 2 + 2, SEEK_CUR); /* skip e_flags(4), e_ehsize(2), e_phentsize(2), e_phnum(2) */
     fread(&e_shentsize, 2, 1, f);
     fread(&e_shnum, 2, 1, f);
     fread(&e_shstrndx, 2, 1, f);
 
-    /* Read section headers to find .text */
+    /* Read section headers to find .text or socket */
     for (int i = 0; i < e_shnum; i++) {
         fseek(f, e_shoff + i * e_shentsize, SEEK_SET);
 
@@ -88,16 +88,15 @@ static int parse_bpf_elf(const char *path, struct elf_bpf_prog *prog) {
         uint64_t sh_offset, sh_size;
         fread(&sh_name, 4, 1, f);
         fread(&sh_type, 4, 1, f);
-        fseek(f, 4 + 4, SEEK_CUR); /* sh_flags */
+        fseek(f, 8 + 8, SEEK_CUR); /* skip sh_flags(8), sh_addr(8) */
         fread(&sh_offset, 8, 1, f);
         fread(&sh_size, 8, 1, f);
 
         /* SHT_PROGBITS = 1 */
         if (sh_type == 1 && sh_size > 0) {
-            /* Read section name from string table */
-            fseek(f, e_shoff + e_shstrndx * e_shentsize, SEEK_SET);
+            /* Read string table offset from the section header for e_shstrndx */
             uint64_t str_off;
-            fseek(f, 16 + 8 + 8 + 8 + 8 + 4, SEEK_SET);
+            fseek(f, e_shoff + e_shstrndx * e_shentsize + 24, SEEK_SET);
             fread(&str_off, 8, 1, f);
 
             fseek(f, str_off + sh_name, SEEK_SET);
