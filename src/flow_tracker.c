@@ -127,6 +127,39 @@ int flow_tracker_update(struct flow_tracker *ft,
     return 0;
 }
 
+void flow_tracker_update_single(struct flow_tracker *ft,
+                                const struct flow_key_t *key,
+                                __u64 bytes, const char *probe_id) {
+    __u64 ts = now_ns();
+    struct flow_record *rec = find_record(ft, key);
+    if (!rec) return;
+
+    rec->value.bytes += bytes;
+    rec->value.packets += 1;
+    rec->value.last_seen_ns = ts;
+
+    struct flow_event_t ev = {0};
+    ev.timestamp_ns = ts;
+    strncpy(ev.probe_id, probe_id, sizeof(ev.probe_id) - 1);
+    strncpy(ev.category, CAT_NETWORK, sizeof(ev.category) - 1);
+    strncpy(ev.event_type, EVT_FLOW, sizeof(ev.event_type) - 1);
+    ev.src_ip = key->src_ip;
+    ev.dst_ip = key->dst_ip;
+    ev.src_port = key->src_port;
+    ev.dst_port = key->dst_port;
+    ev.bytes = bytes;
+    ev.packets = 1;
+    strncpy(ev.protocol, key->protocol == 6 ? PROTO_TCP : PROTO_UDP,
+            sizeof(ev.protocol) - 1);
+
+    if (IS_MULTICAST(key->dst_ip)) {
+        strncpy(ev.tags, "iptv,multicast", sizeof(ev.tags) - 1);
+        strncpy(ev.service, "IPTV", sizeof(ev.service) - 1);
+    }
+
+    add_event(ft, &ev);
+}
+
 int flow_tracker_get_events(struct flow_tracker *ft,
                             struct flow_event_t *events, int max_events) {
     int n = ft->event_count < max_events ? ft->event_count : max_events;
