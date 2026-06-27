@@ -47,13 +47,25 @@ typedef int64_t  __s64;
 #define ANOMALY_SCAN     2
 #define ANOMALY_DROP     3
 
-/* TCP flags */
+/* TCP flags - only define if not already defined by system headers */
+#ifndef TCP_FLAG_SYN
 #define TCP_FLAG_SYN  0x02
+#endif
+#ifndef TCP_FLAG_ACK
 #define TCP_FLAG_ACK  0x10
+#endif
+#ifndef TCP_FLAG_FIN
 #define TCP_FLAG_FIN  0x01
+#endif
+#ifndef TCP_FLAG_RST
 #define TCP_FLAG_RST  0x04
+#endif
+#ifndef TCP_FLAG_PSH
 #define TCP_FLAG_PSH  0x08
+#endif
+#ifndef TCP_FLAG_URG
 #define TCP_FLAG_URG  0x20
+#endif
 
 /* Port constants */
 #define PORT_DNS     53

@@ -4,10 +4,35 @@
 #include <linux/if_ether.h>
 #include <linux/ip.h>
 #include <linux/ipv6.h>
+
+/* Undefine TCP flags from common.h to avoid conflict with linux/tcp.h enum */
+#undef TCP_FLAG_SYN
+#undef TCP_FLAG_ACK
+#undef TCP_FLAG_FIN
+#undef TCP_FLAG_RST
+#undef TCP_FLAG_PSH
+#undef TCP_FLAG_URG
+
 #include <linux/tcp.h>
 #include <linux/udp.h>
 #include <linux/icmp.h>
 #include <time.h>
+
+/* Android NDK uses __kernel_udphdr, define udphdr as alias */
+struct udphdr {
+    __be16 source;
+    __be16 dest;
+    __be16 len;
+    __sum16 check;
+};
+
+/* Redefine our simple TCP flags */
+#define TCP_FLAG_SYN  0x02
+#define TCP_FLAG_ACK  0x10
+#define TCP_FLAG_FIN  0x01
+#define TCP_FLAG_RST  0x04
+#define TCP_FLAG_PSH  0x08
+#define TCP_FLAG_URG  0x20
 
 int packet_parse_raw(const void *data, int len, struct pkt_event_t *evt) {
     if (!data || !evt || len < 14) return 0;

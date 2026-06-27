@@ -99,13 +99,13 @@ int main(int argc, char *argv[]) {
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
-            printf("STB eBPF Probe v4.1 - eBPF Network Monitor\n");
+            printf("STB eBPF Probe v4.2 - eBPF Network Monitor\n");
             printf("Usage: %s [-i interface] [-b bpf_obj] [-v] [-h]\n", argv[0]);
             printf("Env: STB_RELAY_IP, STB_RELAY_PORT, STB_PROBE_ID, STB_IFACE\n");
             return 0;
         }
         if (strcmp(argv[i], "-v") == 0) {
-            printf("STB eBPF Probe v4.1 (eBPF primary, IPv4+IPv6)\n");
+            printf("STB eBPF Probe v4.2 (eBPF primary, IPv4+IPv6, anomaly detection)\n");
             return 0;
         }
         if (strcmp(argv[i], "-i") == 0 && i + 1 < argc) {

@@ -22,10 +22,17 @@
 #include <fcntl.h>
 #include <sys/socket.h>
 #include <sys/ioctl.h>
+#include <sys/syscall.h>
 #include <linux/if.h>
+#include <linux/if_ether.h>
+#include <linux/if_packet.h>
 #include <linux/bpf.h>
 #include <linux/filter.h>
 #include <arpa/inet.h>
+
+#ifndef __NR_bpf
+#define __NR_bpf 386
+#endif
 
 /* Minimal ELF parser for BPF .o files */
 struct elf_bpf_prog {
