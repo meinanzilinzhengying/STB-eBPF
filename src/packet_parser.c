@@ -53,44 +53,49 @@ int packet_parse_raw(const void *data, int len, struct pkt_event_t *evt) {
     if (eth_proto == ETH_P_IP) {
         /* ===== IPv4 ===== */
         if (len < eth_offset + 20) return 0;
-        const struct iphdr *ip = (const struct iphdr *)(p + eth_offset);
+        /* Use memcpy to avoid unaligned access (Bus error on ARM) */
+        struct iphdr ip;
+        memcpy(&ip, p + eth_offset, sizeof(ip));
 
-        if (ntohs(ip->frag_off) & 0x1FFF) return 0;
+        if (ntohs(ip.frag_off) & 0x1FFF) return 0;
 
-        evt->src_ip = ip->saddr;
-        evt->dst_ip = ip->daddr;
-        evt->protocol = ip->protocol;
+        evt->src_ip = ip.saddr;
+        evt->dst_ip = ip.daddr;
+        evt->protocol = ip.protocol;
         evt->ip_version = 4;
 
-        int ip_hdr_len = ip->ihl * 4;
+        int ip_hdr_len = ip.ihl * 4;
         int transport_offset = eth_offset + ip_hdr_len;
 
-        if (ip->protocol == IPPROTO_TCP) {
+        if (ip.protocol == IPPROTO_TCP) {
             if (len < transport_offset + 20) return 0;
-            const struct tcphdr *tcp = (const struct tcphdr *)(p + transport_offset);
-            evt->src_port = ntohs(tcp->source);
-            evt->dst_port = ntohs(tcp->dest);
+            struct tcphdr tcp;
+            memcpy(&tcp, p + transport_offset, sizeof(tcp));
+            evt->src_port = ntohs(tcp.source);
+            evt->dst_port = ntohs(tcp.dest);
 
             __u8 flags = 0;
-            if (tcp->syn) flags |= TCP_FLAG_SYN;
-            if (tcp->ack) flags |= TCP_FLAG_ACK;
-            if (tcp->fin) flags |= TCP_FLAG_FIN;
-            if (tcp->rst) flags |= TCP_FLAG_RST;
-            if (tcp->psh) flags |= TCP_FLAG_PSH;
-            if (tcp->urg) flags |= TCP_FLAG_URG;
+            if (tcp.syn) flags |= TCP_FLAG_SYN;
+            if (tcp.ack) flags |= TCP_FLAG_ACK;
+            if (tcp.fin) flags |= TCP_FLAG_FIN;
+            if (tcp.rst) flags |= TCP_FLAG_RST;
+            if (tcp.psh) flags |= TCP_FLAG_PSH;
+            if (tcp.urg) flags |= TCP_FLAG_URG;
             evt->tcp_flags = flags;
 
-        } else if (ip->protocol == IPPROTO_UDP) {
+        } else if (ip.protocol == IPPROTO_UDP) {
             if (len < transport_offset + 8) return 0;
-            const struct udphdr *udp = (const struct udphdr *)(p + transport_offset);
-            evt->src_port = ntohs(udp->source);
-            evt->dst_port = ntohs(udp->dest);
+            struct udphdr udp;
+            memcpy(&udp, p + transport_offset, sizeof(udp));
+            evt->src_port = ntohs(udp.source);
+            evt->dst_port = ntohs(udp.dest);
 
-        } else if (ip->protocol == IPPROTO_ICMP) {
+        } else if (ip.protocol == IPPROTO_ICMP) {
             if (len < transport_offset + 8) return 0;
-            const struct icmphdr *icmp = (const struct icmphdr *)(p + transport_offset);
+            struct icmphdr icmp;
+            memcpy(&icmp, p + transport_offset, sizeof(icmp));
             evt->src_port = 0;
-            evt->dst_port = (__u16)icmp->type;
+            evt->dst_port = (__u16)icmp.type;
 
         } else {
             evt->src_port = 0;
@@ -102,38 +107,42 @@ int packet_parse_raw(const void *data, int len, struct pkt_event_t *evt) {
     } else if (eth_proto == ETH_P_IPV6) {
         /* ===== IPv6 ===== */
         if (len < eth_offset + 40) return 0;
-        const struct ipv6hdr *ip6 = (const struct ipv6hdr *)(p + eth_offset);
+        /* Use memcpy for IPv6 header to avoid alignment issues */
+        struct ipv6hdr ip6;
+        memcpy(&ip6, p + eth_offset, sizeof(ip6));
 
         /* Hash full 128-bit IPv6 address to 32-bit key (XOR fold) */
-        const __u32 *s6 = (const __u32 *)ip6->saddr.s6_addr;
-        const __u32 *d6 = (const __u32 *)ip6->daddr.s6_addr;
+        const __u32 *s6 = (const __u32 *)ip6.saddr.s6_addr;
+        const __u32 *d6 = (const __u32 *)ip6.daddr.s6_addr;
         evt->src_ip = s6[0] ^ s6[1] ^ s6[2] ^ s6[3];
         evt->dst_ip = d6[0] ^ d6[1] ^ d6[2] ^ d6[3];
-        evt->protocol = ip6->nexthdr;
+        evt->protocol = ip6.nexthdr;
         evt->ip_version = 6;
 
         int transport_offset = eth_offset + 40;
 
-        if (ip6->nexthdr == IPPROTO_TCP) {
+        if (ip6.nexthdr == IPPROTO_TCP) {
             if (len < transport_offset + 20) return 0;
-            const struct tcphdr *tcp = (const struct tcphdr *)(p + transport_offset);
-            evt->src_port = ntohs(tcp->source);
-            evt->dst_port = ntohs(tcp->dest);
+            struct tcphdr tcp;
+            memcpy(&tcp, p + transport_offset, sizeof(tcp));
+            evt->src_port = ntohs(tcp.source);
+            evt->dst_port = ntohs(tcp.dest);
 
             __u8 flags = 0;
-            if (tcp->syn) flags |= TCP_FLAG_SYN;
-            if (tcp->ack) flags |= TCP_FLAG_ACK;
-            if (tcp->fin) flags |= TCP_FLAG_FIN;
-            if (tcp->rst) flags |= TCP_FLAG_RST;
+            if (tcp.syn) flags |= TCP_FLAG_SYN;
+            if (tcp.ack) flags |= TCP_FLAG_ACK;
+            if (tcp.fin) flags |= TCP_FLAG_FIN;
+            if (tcp.rst) flags |= TCP_FLAG_RST;
             evt->tcp_flags = flags;
 
-        } else if (ip6->nexthdr == IPPROTO_UDP) {
+        } else if (ip6.nexthdr == IPPROTO_UDP) {
             if (len < transport_offset + 8) return 0;
-            const struct udphdr *udp = (const struct udphdr *)(p + transport_offset);
-            evt->src_port = ntohs(udp->source);
-            evt->dst_port = ntohs(udp->dest);
+            struct udphdr udp;
+            memcpy(&udp, p + transport_offset, sizeof(udp));
+            evt->src_port = ntohs(udp.source);
+            evt->dst_port = ntohs(udp.dest);
 
-        } else if (ip6->nexthdr == IPPROTO_ICMPV6) {
+        } else if (ip6.nexthdr == IPPROTO_ICMPV6) {
             evt->src_port = 0;
             evt->dst_port = 0;
 

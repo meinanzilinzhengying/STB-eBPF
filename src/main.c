@@ -280,6 +280,12 @@ static void sig_handler(int sig) {
     g_stop = 1;
 }
 
+static void sigbus_handler(int sig) {
+    (void)sig;
+    /* SIGBUS: memory alignment error, skip this packet */
+    fprintf(stderr, "[WARN] SIGBUS received, continuing...\n");
+}
+
 /* Read BPF perf_buffer events */
 static int read_bpf_events(struct bpf_loader_status *bpf_status,
                            struct flow_tracker *tracker,
@@ -401,6 +407,7 @@ int main(int argc, char *argv[]) {
     signal(SIGINT, sig_handler);
     signal(SIGTERM, sig_handler);
     signal(SIGPIPE, SIG_IGN);
+    signal(SIGBUS, sigbus_handler);
 
     /* Initialize modules */
     struct flow_tracker *tracker = flow_tracker_create(MAX_FLOWS);
@@ -437,8 +444,10 @@ int main(int argc, char *argv[]) {
     __u64 total_packets = 0;
 
     printf("[INFO] Starting main loop...\n");
+    fflush(stdout);
 
     while (!g_stop) {
+        fprintf(stderr, "[DBG] Loop iteration, use_bpf=%d\n", use_bpf);
         if (use_bpf) {
             /* ===== eBPF Mode ===== */
             int pkt_this_round = 0;
@@ -451,7 +460,7 @@ int main(int argc, char *argv[]) {
 
             /* Always read raw packets for protocol-specific parsing (DNS, HTTP, retransmit) */
             {
-                unsigned char pkt_buf[2048];
+                unsigned char pkt_buf[2048] __attribute__((aligned(4)));
                 while (!g_stop && pkt_this_round < 1000) {
                     int len = recvfrom(bpf_status.socket_fd, pkt_buf, sizeof(pkt_buf),
                                        MSG_DONTWAIT, NULL, NULL);
