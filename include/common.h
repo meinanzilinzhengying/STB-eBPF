@@ -18,23 +18,43 @@ typedef int64_t  __s64;
 #define CAT_NETWORK     "network"
 #define CAT_METRICS     "metrics"
 #define CAT_IPTV        "iptv"
+#define CAT_DNS         "dns"
+#define CAT_ICMP        "icmp"
 
 #define EVT_FLOW        "flow"
 #define EVT_CONNECT     "connect"
 #define EVT_DISCONNECT  "disconnect"
+#define EVT_TCP_STATE   "tcp_state"
+#define EVT_DNS_QUERY   "dns_query"
+#define EVT_DNS_REPLY   "dns_reply"
+#define EVT_ICMP_ECHO   "icmp_echo"
 #define EVT_IPTV_STREAM "iptv_stream"
 #define EVT_IPTV_STUTTER "iptv_stutter"
 #define EVT_HOST_METRICS "host_metrics"
 
 #define PROTO_TCP   "TCP"
 #define PROTO_UDP   "UDP"
+#define PROTO_ICMP  "ICMP"
+
+/* TCP flags */
+#define TCP_FLAG_SYN  0x02
+#define TCP_FLAG_ACK  0x10
+#define TCP_FLAG_FIN  0x01
+#define TCP_FLAG_RST  0x04
+#define TCP_FLAG_PSH  0x08
+#define TCP_FLAG_URG  0x20
+
+/* Port constants */
+#define PORT_DNS     53
+#define PORT_HTTP    80
+#define PORT_HTTPS   443
 
 #define MAX_COMM_LEN    16
 #define MAX_PROBE_ID    64
-#define MAX_FLOWS       2048
-#define MAX_JSON_LEN    4096
+#define MAX_FLOWS       4096
+#define MAX_JSON_LEN    8192
 #define RING_BUF_SIZE   4096
-#define MAX_EVENTS_BATCH 32
+#define MAX_EVENTS_BATCH 64
 
 #define RECONNECT_BASE_DELAY_MS   1000
 #define RECONNECT_MAX_DELAY_MS    30000
@@ -50,7 +70,8 @@ struct flow_key_t {
     __u16 src_port;
     __u16 dst_port;
     __u8  protocol;
-    __u8  _pad[3];
+    __u8  ip_version;   /* 4 or 6 */
+    __u8  _pad[2];
 };
 
 struct flow_value_t {
@@ -60,6 +81,9 @@ struct flow_value_t {
     __u64 last_seen_ns;
     __u32 pid;
     char  comm[MAX_COMM_LEN];
+    __u16 max_pkt_size;
+    __u16 min_pkt_size;
+    __u32 tcp_flags_seen;  /* bitmask of all TCP flags seen */
 };
 
 struct flow_event_t {
@@ -72,9 +96,13 @@ struct flow_event_t {
     __u16 src_port;
     __u16 dst_port;
     char  protocol[8];
+    __u8  ip_version;     /* 4 or 6 */
+    __u8  tcp_flags;      /* SYN/ACK/FIN/RST bitmask */
+    __u16 pkt_len;
     __u64 bytes;
     __u64 packets;
-    __u64 latency_ms;
+    __u64 latency_us;     /* SYN→SYN-ACK latency in microseconds */
+    __u32 pid;
     char  service[32];
     char  details[128];
     char  tags[64];
@@ -99,6 +127,7 @@ struct proc_net_entry {
     __u16 remote_port;
     __u8  state;
     __u8  protocol;
+    __u8  ip_version;
     __u64 rx_queue;
     __u64 tx_queue;
     __u32 uid;

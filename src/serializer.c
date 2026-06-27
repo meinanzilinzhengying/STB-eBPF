@@ -14,18 +14,21 @@ int serialize_flow_event(const struct flow_event_t *event,
         "\"category\":\"%s\",\"event_type\":\"%s\","
         "\"src_ip\":\"%s\",\"dst_ip\":\"%s\","
         "\"src_port\":%u,\"dst_port\":%u,"
-        "\"protocol\":\"%s\","
+        "\"protocol\":\"%s\",\"ip_version\":%u,"
+        "\"tcp_flags\":%u,\"pkt_len\":%u,"
         "\"bytes\":%llu,\"packets\":%llu,"
-        "\"latency_ms\":%llu,"
+        "\"latency_us\":%llu,\"pid\":%u,"
         "\"service\":\"%s\",\"details\":\"%s\",\"tags\":\"%s\"}\n",
         (unsigned long long)event->timestamp_ns, probe_id,
         event->category, event->event_type,
         src, dst,
         event->src_port, event->dst_port,
-        event->protocol,
+        event->protocol, event->ip_version,
+        event->tcp_flags, event->pkt_len,
         (unsigned long long)event->bytes,
         (unsigned long long)event->packets,
-        (unsigned long long)event->latency_ms,
+        (unsigned long long)event->latency_us,
+        event->pid,
         event->service, event->details, event->tags);
 }
 

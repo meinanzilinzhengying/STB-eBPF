@@ -7,7 +7,7 @@ static int parse_proc_net_file(const char *path, int is_tcp,
     FILE *f = fopen(path, "r");
     if (!f) return 0;
 
-    char line[512];
+    char line[1024];
     int count = 0;
 
     if (fgets(line, sizeof(line), f) == NULL) {
@@ -20,6 +20,8 @@ static int parse_proc_net_file(const char *path, int is_tcp,
         unsigned int state, txq, rxq, uid, inode;
         int n;
 
+        /* Parse /proc/net/tcp[6] format:
+         * sl  local_address:port rem_address:port st tx_queue:rx_queue ... uid inode */
         n = sscanf(line, " %*d %x:%x %x:%x %x %x:%x %*x:%x %*x %*d %*d %u %u",
                    &lip, &lport, &rip, &rport, &state, &rxq, &txq, &uid, &inode);
         if (n < 5) continue;
@@ -51,13 +53,11 @@ int proc_net_read_udp(struct proc_net_entry *entries, int max_entries) {
 }
 
 int proc_net_read_tcp6(struct proc_net_entry *entries, int max_entries) {
-    (void)entries; (void)max_entries;
-    return 0;
+    return parse_proc_net_file("/proc/net/tcp6", 1, entries, max_entries);
 }
 
 int proc_net_read_udp6(struct proc_net_entry *entries, int max_entries) {
-    (void)entries; (void)max_entries;
-    return 0;
+    return parse_proc_net_file("/proc/net/udp6", 0, entries, max_entries);
 }
 
 int proc_net_read_dev(__u64 *rx_bytes, __u64 *tx_bytes) {

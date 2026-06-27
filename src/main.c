@@ -97,13 +97,13 @@ int main(int argc, char *argv[]) {
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
-            printf("STB eBPF Probe v4.0 - eBPF Network Monitor\n");
+            printf("STB eBPF Probe v4.1 - eBPF Network Monitor\n");
             printf("Usage: %s [-i interface] [-b bpf_obj] [-v] [-h]\n", argv[0]);
             printf("Env: STB_RELAY_IP, STB_RELAY_PORT, STB_PROBE_ID, STB_IFACE\n");
             return 0;
         }
         if (strcmp(argv[i], "-v") == 0) {
-            printf("STB eBPF Probe v4.0 (eBPF primary)\n");
+            printf("STB eBPF Probe v4.1 (eBPF primary, IPv4+IPv6)\n");
             return 0;
         }
         if (strcmp(argv[i], "-i") == 0 && i + 1 < argc) {
@@ -119,10 +119,11 @@ int main(int argc, char *argv[]) {
     if (env_iface && env_iface[0]) ifname = env_iface;
 
     printf("=============================================\n");
-    printf("STB eBPF Probe v4.0 - eBPF Network Monitor\n");
+    printf("STB eBPF Probe v4.1 - eBPF Network Monitor\n");
     printf("Relay: %s:%d\n", cfg.relay_server_ip, cfg.relay_server_port);
     printf("Probe ID: %s\n", cfg.probe_id);
     printf("Interface: %s\n", ifname);
+    printf("Protocols: IPv4 + IPv6, TCP + UDP + ICMP + DNS\n");
     printf("Mode: eBPF socket filter + /proc/net fallback\n");
     printf("=============================================\n");
 
@@ -188,6 +189,7 @@ int main(int argc, char *argv[]) {
                         .src_ip = pkt.src_ip, .dst_ip = pkt.dst_ip,
                         .src_port = pkt.src_port, .dst_port = pkt.dst_port,
                         .protocol = pkt.protocol,
+                        .ip_version = pkt.ip_version,
                     };
                     flow_tracker_update_single(tracker, &key, pkt.pkt_len, cfg.probe_id);
                     pkt_this_round++;
@@ -195,16 +197,20 @@ int main(int argc, char *argv[]) {
                 }
             }
 
-            /* Also poll /proc/net for connection state enrichment */
-            int tcp_count = proc_net_read_tcp(entries, MAX_FLOWS / 2);
-            int udp_count = proc_net_read_udp(entries + tcp_count, MAX_FLOWS / 2 - tcp_count);
-            flow_tracker_update(tracker, entries, tcp_count + udp_count);
+            /* Also poll /proc/net for connection state enrichment (IPv4 + IPv6) */
+            int tcp4 = proc_net_read_tcp(entries, MAX_FLOWS / 4);
+            int udp4 = proc_net_read_udp(entries + tcp4, MAX_FLOWS / 4 - tcp4);
+            int tcp6 = proc_net_read_tcp6(entries + tcp4 + udp4, MAX_FLOWS / 4);
+            int udp6 = proc_net_read_udp6(entries + tcp4 + udp4 + tcp6, MAX_FLOWS / 4 - tcp6);
+            flow_tracker_update(tracker, entries, tcp4 + udp4 + tcp6 + udp6);
 
         } else {
-            /* ===== /proc/net Fallback Mode ===== */
-            int tcp_count = proc_net_read_tcp(entries, MAX_FLOWS);
-            int udp_count = proc_net_read_udp(entries + tcp_count, MAX_FLOWS - tcp_count);
-            flow_tracker_update(tracker, entries, tcp_count + udp_count);
+            /* ===== /proc/net Fallback Mode (IPv4 + IPv6) ===== */
+            int tcp4 = proc_net_read_tcp(entries, MAX_FLOWS / 4);
+            int udp4 = proc_net_read_udp(entries + tcp4, MAX_FLOWS / 4 - tcp4);
+            int tcp6 = proc_net_read_tcp6(entries + tcp4 + udp4, MAX_FLOWS / 4);
+            int udp6 = proc_net_read_udp6(entries + tcp4 + udp4 + tcp6, MAX_FLOWS / 4 - tcp6);
+            flow_tracker_update(tracker, entries, tcp4 + udp4 + tcp6 + udp6);
         }
 
         /* Host metrics every 30s */
