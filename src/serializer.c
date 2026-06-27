@@ -66,6 +66,11 @@ int serialize_batch(const struct flow_event_t *flow_events, int flow_count,
         int ret = serialize_flow_event(&flow_events[i], probe_id,
                                        output + written, output_size - written);
         if (ret < 0) break;
+        /* Check for truncation: snprintf returns chars that would have been written */
+        if (ret >= output_size - written) {
+            written = output_size - 2; /* Mark as truncated */
+            break;
+        }
         written += ret;
         first = 0;
     }

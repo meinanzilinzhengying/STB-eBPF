@@ -197,13 +197,4 @@ int set_nonblocking(int sock_fd);
  */
 int set_blocking(int sock_fd);
 
-/**
- * disable_sigpipe - Disable SIGPIPE signal for socket
- * 
- * @sock_fd: Socket file descriptor
- * 
- * Returns: 0 on success, -1 on failure
- */
-int disable_sigpipe(int sock_fd);
-
 #endif /* _STB_TCP_CLIENT_H */

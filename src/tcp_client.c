@@ -73,14 +73,9 @@ static int tcp_client_try_connect(struct tcp_client *client) {
         client->sock_fd = -1;
         return -1;
     }
-    
-    /* Disable SIGPIPE */
-    if (disable_sigpipe(client->sock_fd) != 0) {
-        if (LOG_LEVEL >= 1) {
-            fprintf(stderr, "[WARN] disable_sigpipe failed (ignored)\n");
-        }
-    }
-    
+
+    /* SIGPIPE is handled by signal(SIGPIPE, SIG_IGN) in main.c */
+
     /* Setup server address */
     struct sockaddr_in server_addr;
     memset(&server_addr, 0, sizeof(server_addr));
@@ -693,10 +688,6 @@ int set_blocking(int sock_fd) {
  * disable_sigpipe - Disable SIGPIPE signal for socket
  * 
  * @sock_fd: Socket file descriptor
- * 
+ *
  * Returns: 0 on success, -1 on failure
  */
-int disable_sigpipe(int sock_fd) {
-    (void)sock_fd;
-    return 0;
-}

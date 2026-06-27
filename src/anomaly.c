@@ -122,18 +122,21 @@ int anomaly_check_flow(struct anomaly_detector *ad, struct flow_event_t *flow) {
     if (bw) {
         __u64 dt_ns = ts - bw->last_time_ns;
         if (dt_ns > 0 && bw->last_time_ns > 0) {
-            __u64 delta_bytes = flow->bytes; /* This packet's bytes */
-            __u64 bps = (delta_bytes * 8 * 1000000000ULL) / dt_ns;
+            /* Use accumulated bytes for bandwidth calculation, not single packet */
+            __u64 delta_bytes = bw->last_bytes;
+            if (delta_bytes > 0) {
+                __u64 bps = (delta_bytes * 8 * 1000000000ULL) / dt_ns;
 
-            flow->bandwidth_bps = bps;
+                flow->bandwidth_bps = bps;
 
-            if (bps > ad->spike_threshold_bps) {
-                flow->anomaly = ANOMALY_SPIKE;
-                snprintf(flow->details, sizeof(flow->details),
-                         "bandwidth spike: %llu bps", bps);
-                strncpy(flow->tags, "anomaly,spike", sizeof(flow->tags) - 1);
-                ad->spike_count++;
-                return ANOMALY_SPIKE;
+                if (bps > ad->spike_threshold_bps) {
+                    flow->anomaly = ANOMALY_SPIKE;
+                    snprintf(flow->details, sizeof(flow->details),
+                             "bandwidth spike: %llu bps", bps);
+                    strncpy(flow->tags, "anomaly,spike", sizeof(flow->tags) - 1);
+                    ad->spike_count++;
+                    return ANOMALY_SPIKE;
+                }
             }
         }
         bw->last_bytes += flow->bytes;
