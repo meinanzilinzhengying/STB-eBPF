@@ -1,0 +1,132 @@
+sequenceDiagram
+    participant Kernel as Linux Kernel 5.4.210 (ARM32)
+    participant BPF as BPF Program (stb_connect.bpf.o)
+    participant Maps as BPF Maps (perf_map, connect_start)
+    participant Userspace as Userspace Probe (stb_ebpf_probe)
+    participant PerfBuf as Perf Buffer (perf_event_array)
+    participant Serializer as Serializer (JSON)
+    participant TCP as TCP Client
+    participant Relay as Relay Server (192.168.58.130:9104)
+    participant Backend as Backend (data-ingest → ClickHouse)
+
+    Note over Kernel,Backend: === 启动初始化流程 ===
+
+    Userspace->>Userspace: main() → setup_signal_handlers()
+    Userspace->>Userspace: loader_init() → set_legacy_mode()
+    activate Userspace
+    Userspace->>BPF: loader_load("stb_connect.bpf.o")
+    activate BPF
+    BPF->>BPF: bpf_object__open_file() (no BTF)
+    BPF->>BPF: bpf_object__load() → load to kernel
+    BPF->>Maps: bpf_map__fd(perf_map)
+    BPF->>Maps: bpf_map__fd(connect_start)
+    deactivate BPF
+    deactivate Userspace
+
+    Userspace->>BPF: loader_attach()
+    activate Userspace
+    activate BPF
+    BPF->>Kernel: bpf_program__attach_tracepoint("syscalls", "sys_enter_connect")
+    Kernel-->>BPF: link_enter (success)
+    BPF->>Kernel: bpf_program__attach_tracepoint("syscalls", "sys_exit_connect")
+    Kernel-->>BPF: link_exit (success)
+    deactivate BPF
+    deactivate Userspace
+
+    Userspace->>Userspace: perf_monitor_init(perf_map_fd, ring_buf)
+    Userspace->>Userspace: serializer_init(MAX_EVENTS_PER_BATCH, BATCH_FLUSH_TIMEOUT_MS)
+    Userspace->>Userspace: tcp_client_init(RELAY_SERVER_IP, RELAY_SERVER_PORT)
+    Userspace->>TCP: tcp_client_connect()
+    activate TCP
+    TCP->>Relay: TCP connect 192.168.58.130:9104
+    Relay-->>TCP: Connected
+    deactivate TCP
+
+    Note over Kernel,Backend: === 事件采集流程 (sys_enter_connect) ===
+
+    Kernel->>BPF: tracepoint (sys_enter_connect)
+    activate Kernel
+    activate BPF
+    BPF->>BPF: get_pid_tgid() → pid, tid
+    BPF->>BPF: bpf_probe_read_user(args → fd, user_addr, addr_len)
+    BPF->>BPF: read_sockaddr_in() → family, daddr, dport
+    BPF->>Maps: bpf_map_update_elem(connect_start, pid_tgid, timestamp_ns)
+    BPF->>BPF: Fill connect_event_t (enter)
+    BPF->>Maps: bpf_perf_event_output(ctx, perf_map, BPF_F_CURRENT_CPU, event)
+    Note right of BPF: Event sent to perf buffer
+    deactivate BPF
+    deactivate Kernel
+
+    Note over Kernel,Backend: === 事件采集流程 (sys_exit_connect) ===
+
+    Kernel->>BPF: tracepoint (sys_exit_connect)
+    activate Kernel
+    activate BPF
+    BPF->>Maps: bpf_map_lookup_elem(connect_start, pid_tgid)
+    Maps-->>BPF: start_timestamp_ns
+    BPF->>BPF: Calculate latency_us = (now - start) / 1000
+    BPF->>Maps: bpf_map_delete_elem(connect_start, pid_tgid)
+    BPF->>BPF: Fill connect_event_t (exit)
+    BPF->>Maps: bpf_perf_event_output(ctx, perf_map, BPF_F_CURRENT_CPU, event)
+    Note right of BPF: Event sent to perf buffer
+    deactivate BPF
+    deactivate Kernel
+
+    Note over Kernel,Backend: === 用户态主循环 (每 100ms) ===
+
+    loop while (!g_stop_requested)
+        Userspace->>PerfBuf: perf_monitor_poll_once(monitor, 100)
+        activate Userspace
+        activate PerfBuf
+        PerfBuf->>PerfBuf: perf_buffer__poll(pb, 100ms)
+        Note over PerfBuf: Kernel delivers events via perf buffer
+        PerfBuf->>Userspace: event_handler(ctx, cpu, data, size)
+        activate Userspace
+        Userspace->>Userspace: ring_buffer_push(ring_buf, event)
+        deactivate Userspace
+        deactivate PerfBuf
+
+        Userspace->>Userspace: ring_buffer_pop(ring_buf, &event)
+        Note over Userspace: Phase 2: Read events from ring buffer
+        
+        Userspace->>Serializer: serializer_add_event(serializer, &event)
+        activate Serializer
+        Serializer->>Serializer: Add to batch buffer
+        deactivate Serializer
+
+        alt Batch full or timeout
+            Userspace->>Serializer: serializer_flush(serializer, json_buf, size)
+            activate Serializer
+            Serializer->>Serializer: connect_event_t → JSON
+            Note over Serializer: {"probe_id":"stb-tyson-01", "timestamp":"...", "events":[...]}
+            Serializer-->>Userspace: json_buf (serialized)
+            deactivate Serializer
+
+            Userspace->>TCP: tcp_client_send_line(tcp_client, json_buf)
+            activate TCP
+            TCP->>Relay: send(json_line + "\n")
+            activate Relay
+            Relay->>Backened: Forward JSON to data-ingest :9104
+            activate Backened
+            Backened->>Backened: Parse JSON → INSERT INTO cloudflow.ebpf_events
+            deactivate Backened
+            Relay-->>TCP: ACK
+            deactivate Relay
+            deactivate TCP
+        end
+    end
+
+    Note over Kernel,Backend: === 信号处理 + 清理 ===
+
+    Kernel->>Userspace: Signal (SIGINT / SIGTERM)
+    activate Kernel
+    Userspace->>Userspace: signal_handler() → g_stop_requested = 1
+    deactivate Kernel
+
+    Userspace->>Userspace: cleanup_all()
+    Userspace->>TCP: tcp_client_cleanup() → close socket
+    Userspace->>Serializer: serializer_cleanup()
+    Userspace->>PerfBuf: perf_monitor_stop() → perf_buffer__free()
+    Userspace->>BPF: loader_unload() → detach + unload BPF
+    Userspace->>Userspace: print_runtime_stats()
+    Note over Userspace: Total events, sent, dropped, CPU, memory
