@@ -461,6 +461,7 @@ int main(int argc, char *argv[]) {
                     struct timespec ts;
                     clock_gettime(CLOCK_MONOTONIC, &ts);
                     pkt.timestamp_ns = (__u64)ts.tv_sec * 1000000000ULL + ts.tv_nsec;
+                    pkt.pkt_len = len; /* Set frame length from recvfrom */
 
                     if (packet_parse_raw(pkt_buf, len, &pkt)) {
                         struct flow_event_t flow;

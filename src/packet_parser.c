@@ -104,9 +104,11 @@ int packet_parse_raw(const void *data, int len, struct pkt_event_t *evt) {
         if (len < eth_offset + 40) return 0;
         const struct ipv6hdr *ip6 = (const struct ipv6hdr *)(p + eth_offset);
 
-        /* Map to IPv4-compatible (last 32 bits) */
-        evt->src_ip = *((const __u32 *)&ip6->saddr.s6_addr[12]);
-        evt->dst_ip = *((const __u32 *)&ip6->daddr.s6_addr[12]);
+        /* Hash full 128-bit IPv6 address to 32-bit key (XOR fold) */
+        const __u32 *s6 = (const __u32 *)ip6->saddr.s6_addr;
+        const __u32 *d6 = (const __u32 *)ip6->daddr.s6_addr;
+        evt->src_ip = s6[0] ^ s6[1] ^ s6[2] ^ s6[3];
+        evt->dst_ip = d6[0] ^ d6[1] ^ d6[2] ^ d6[3];
         evt->protocol = ip6->nexthdr;
         evt->ip_version = 6;
 
