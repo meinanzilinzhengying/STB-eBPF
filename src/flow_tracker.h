@@ -15,6 +15,7 @@ void flow_tracker_update_single(struct flow_tracker *ft,
 int flow_tracker_get_events(struct flow_tracker *ft,
                             struct flow_event_t *events, int max_events);
 void flow_tracker_flush(struct flow_tracker *ft);
+void flow_tracker_cleanup(struct flow_tracker *ft, __u64 max_age_ns);
 void flow_tracker_get_stats(struct flow_tracker *ft,
                             int *active_flows, int *total_events);
 

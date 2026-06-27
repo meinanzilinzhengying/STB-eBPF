@@ -17,7 +17,8 @@ int serialize_flow_event(const struct flow_event_t *event,
         "\"protocol\":\"%s\",\"ip_version\":%u,"
         "\"tcp_flags\":%u,\"pkt_len\":%u,"
         "\"bytes\":%llu,\"packets\":%llu,"
-        "\"latency_us\":%llu,\"pid\":%u,"
+        "\"latency_us\":%llu,\"bandwidth_bps\":%llu,"
+        "\"anomaly\":%u,\"payload_type\":%u,\"pid\":%u,"
         "\"service\":\"%s\",\"details\":\"%s\",\"tags\":\"%s\"}\n",
         (unsigned long long)event->timestamp_ns, probe_id,
         event->category, event->event_type,
@@ -28,7 +29,8 @@ int serialize_flow_event(const struct flow_event_t *event,
         (unsigned long long)event->bytes,
         (unsigned long long)event->packets,
         (unsigned long long)event->latency_us,
-        event->pid,
+        (unsigned long long)event->bandwidth_bps,
+        event->anomaly, event->payload_type, event->pid,
         event->service, event->details, event->tags);
 }
 

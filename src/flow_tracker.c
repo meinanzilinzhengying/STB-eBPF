@@ -171,6 +171,27 @@ void flow_tracker_flush(struct flow_tracker *ft) {
     ft->event_count = 0;
 }
 
+void flow_tracker_cleanup(struct flow_tracker *ft, __u64 max_age_ns) {
+    if (!ft) return;
+    __u64 ts = now_ns();
+    int cleaned = 0;
+
+    for (int i = 0; i < ft->max_flows; i++) {
+        if (ft->records[i].active &&
+            ft->records[i].value.last_seen_ns > 0 &&
+            (ts - ft->records[i].value.last_seen_ns) > max_age_ns) {
+            ft->records[i].active = 0;
+            ft->active_count--;
+            cleaned++;
+        }
+    }
+
+    if (cleaned > 0) {
+        printf("[FLOW] Cleaned %d stale flows (active: %d)\n",
+               cleaned, ft->active_count);
+    }
+}
+
 void flow_tracker_get_stats(struct flow_tracker *ft,
                             int *active_flows, int *total_events) {
     if (active_flows) *active_flows = ft->active_count;

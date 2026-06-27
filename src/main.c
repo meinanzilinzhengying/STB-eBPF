@@ -16,6 +16,7 @@
 #include <unistd.h>
 #include <time.h>
 #include <net/ethernet.h>
+#include <sys/resource.h>
 
 #include "config.h"
 #include "runtime_config.h"
