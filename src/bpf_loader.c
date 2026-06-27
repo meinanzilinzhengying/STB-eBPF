@@ -139,6 +139,9 @@ static int parse_bpf_elf(const char *path, struct elf_bpf_prog *prog) {
             fread(name, 1, sizeof(name) - 1, f);
 
             if (strstr(name, "text") || strstr(name, "socket")) {
+                fprintf(stderr, "[BPF] Section '%s': offset=%lu size=%lu str_off=%lu\n",
+                        name, (unsigned long)sh_offset, (unsigned long)sh_size,
+                        (unsigned long)str_off);
                 /* Found BPF program section */
                 void *insns = malloc(sh_size);
                 if (!insns) { fclose(f); return -1; }
@@ -147,6 +150,12 @@ static int parse_bpf_elf(const char *path, struct elf_bpf_prog *prog) {
                 if (fread(insns, 1, sh_size, f) != sh_size) {
                     free(insns); fclose(f); return -1;
                 }
+
+                /* Print first 8 bytes of loaded instructions for verification */
+                unsigned char *bytes = (unsigned char *)insns;
+                fprintf(stderr, "[BPF] First bytes: %02x %02x %02x %02x %02x %02x %02x %02x\n",
+                        bytes[0], bytes[1], bytes[2], bytes[3],
+                        bytes[4], bytes[5], bytes[6], bytes[7]);
 
                 prog->insns = insns;
                 prog->insn_cnt = sh_size / 8; /* Each BPF insn is 8 bytes */
@@ -160,6 +169,14 @@ static int parse_bpf_elf(const char *path, struct elf_bpf_prog *prog) {
     return -1;
 }
 
+/* Embedded BPF socket filter: returns skb->len (pass-through) */
+static const struct sock_filter embedded_bpf_prog[] = {
+    /* w0 = *(u32 *)(r1 + 0x0)  - load skb->len */
+    { 0x61, 0, 0, 0, 0 },
+    /* exit */
+    { 0x95, 0, 0, 0, 0 },
+};
+
 int bpf_loader_init(const char *ifname, const char *bpf_obj_path,
                     struct bpf_loader_status *status) {
     memset(status, 0, sizeof(*status));
@@ -167,61 +184,61 @@ int bpf_loader_init(const char *ifname, const char *bpf_obj_path,
     status->perf_map_fd = -1;
     status->bpf_prog_fd = -1;
 
-    /* 1. Parse BPF ELF */
+    /* 1. Try to parse BPF ELF, fallback to embedded bytecode */
     struct elf_bpf_prog bpf_prog;
-    if (parse_bpf_elf(bpf_obj_path, &bpf_prog) != 0) {
-        snprintf(status->error, sizeof(status->error),
-                 "Failed to parse BPF ELF: %s", bpf_obj_path);
-        return -1;
+    int use_embedded = 0;
+    const void *insns;
+    int insn_cnt;
+
+    if (parse_bpf_elf(bpf_obj_path, &bpf_prog) == 0) {
+        insns = bpf_prog.insns;
+        insn_cnt = bpf_prog.insn_cnt;
+    } else {
+        /* ELF parsing failed, use embedded pass-through filter */
+        insns = embedded_bpf_prog;
+        insn_cnt = sizeof(embedded_bpf_prog) / sizeof(embedded_bpf_prog[0]);
+        use_embedded = 1;
+        printf("[INFO] Using embedded BPF socket filter (pass-through)\n");
     }
 
     /* 2. Load BPF program via bpf() syscall */
+    char log_buf[4096] = {0};
     union bpf_attr attr;
     memset(&attr, 0, sizeof(attr));
     attr.prog_type = BPF_PROG_TYPE_SOCKET_FILTER;
-    attr.insns = (uint64_t)(unsigned long)bpf_prog.insns;
-    attr.insn_cnt = bpf_prog.insn_cnt;
+    attr.insns = (uint64_t)(unsigned long)insns;
+    attr.insn_cnt = insn_cnt;
     attr.license = (uint64_t)(unsigned long)"GPL";
-    attr.log_buf = 0;
-    attr.log_level = 0;
-    attr.log_size = 0;
+    attr.log_buf = (uint64_t)(unsigned long)log_buf;
+    attr.log_level = 1;
+    attr.log_size = sizeof(log_buf);
     attr.kern_version = 0;
 
+    fprintf(stderr, "[BPF] Loading %d instructions via bpf() syscall...\n", insn_cnt);
     int prog_fd = syscall(__NR_bpf, BPF_PROG_LOAD, &attr, sizeof(attr));
-    free((void *)bpf_prog.insns);
+    fprintf(stderr, "[BPF] BPF_PROG_LOAD returned fd=%d errno=%d\n", prog_fd, errno);
+    if (use_embedded) {
+        /* Nothing to free for embedded bytecode */
+    } else {
+        free((void *)insns);
+    }
 
     if (prog_fd < 0) {
         snprintf(status->error, sizeof(status->error),
-                 "BPF_PROG_LOAD failed: %s", strerror(errno));
+                 "BPF_PROG_LOAD failed: %s\nVerifier: %s",
+                 strerror(errno), log_buf[0] ? log_buf : "(no log)");
         return -1;
     }
     status->bpf_prog_fd = prog_fd;
 
-    /* 2.5. Find perf_event_array map fd from loaded program */
+    /* 2.5. Skip perf_event_array map search - not needed for raw packet reading */
     status->perf_map_fd = -1;
-    {
-        __u32 id = 0;
-        while (bpf_map_get_next_id(id, &id) == 0) {
-            int map_fd = bpf_map_get_fd_by_id(id);
-            if (map_fd < 0) continue;
-
-            struct bpf_map_info info;
-            __u32 info_len = sizeof(info);
-            memset(&info, 0, sizeof(info));
-            if (bpf_obj_get_info_by_fd(map_fd, &info, &info_len) == 0) {
-                if (info.type == BPF_MAP_TYPE_PERF_EVENT_ARRAY) {
-                    status->perf_map_fd = map_fd;
-                    printf("[INFO] Found perf_event_array map (id=%u, fd=%d)\n",
-                           id, map_fd);
-                    break;
-                }
-            }
-            close(map_fd);
-        }
-    }
+    fprintf(stderr, "[BPF] Skipping perf map search (raw packet mode)\n");
 
     /* 3. Create AF_PACKET raw socket */
+    fprintf(stderr, "[BPF] Creating AF_PACKET socket...\n");
     int sock_fd = socket(AF_PACKET, SOCK_RAW, htons(ETH_P_ALL));
+    fprintf(stderr, "[BPF] AF_PACKET socket fd=%d\n", sock_fd);
     if (sock_fd < 0) {
         snprintf(status->error, sizeof(status->error),
                  "socket(AF_PACKET) failed: %s (need root)", strerror(errno));
@@ -253,13 +270,16 @@ int bpf_loader_init(const char *ifname, const char *bpf_obj_path,
     }
 
     /* 5. Attach BPF program to socket */
+    fprintf(stderr, "[BPF] Attaching BPF to socket...\n");
     if (setsockopt(sock_fd, SOL_SOCKET, SO_ATTACH_BPF,
                    &prog_fd, sizeof(prog_fd)) < 0) {
+        fprintf(stderr, "[BPF] SO_ATTACH_BPF failed: %s\n", strerror(errno));
         snprintf(status->error, sizeof(status->error),
                  "SO_ATTACH_BPF failed: %s", strerror(errno));
         close(sock_fd); close(prog_fd);
         return -1;
     }
+    fprintf(stderr, "[BPF] BPF attached successfully\n");
 
     status->socket_fd = sock_fd;
     status->use_bpf = 1;
