@@ -235,6 +235,9 @@ int main(int argc, char *argv[]) {
             host_metrics_collect(&metric, cfg.probe_id);
             mp = &metric;
             last_metric_ns = now_ns;
+
+            /* Cleanup stale flows every 60s (alongside metrics) */
+            flow_tracker_cleanup(tracker, FLOW_CLEANUP_INTERVAL_S * 1000000000ULL);
         }
 
         /* Serialize and send */

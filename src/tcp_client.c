@@ -412,96 +412,78 @@ int tcp_client_send(struct tcp_client *client,
         }
     }
     
-    /* Check if data ends with \n, if not, we'll add it */
-    int add_newline = (data[len - 1] != '\n');
-    int total_len = len + (add_newline ? 1 : 0);
+    /* Wrap data in HTTP POST request for data-ingest service */
+    char http_buf[65536];
+    int http_len = snprintf(http_buf, sizeof(http_buf),
+        "POST /api/v1/ingest HTTP/1.1\r\n"
+        "Host: %s\r\n"
+        "Content-Type: application/json\r\n"
+        "Content-Length: %d\r\n"
+        "Connection: keep-alive\r\n"
+        "\r\n%.*s",
+        client->server_ip, len, len, data);
+    
+    if (http_len <= 0 || http_len >= (int)sizeof(http_buf)) {
+        errno = EMSGSIZE;
+        return -1;
+    }
 
     /* Use send() with MSG_NOSIGNAL */
     int flags = MSG_NOSIGNAL;
-
-    /* Use stack buffer for typical small payloads to avoid malloc */
-    char stack_buf[4096];
-    char *send_data = NULL;
-    if (add_newline) {
-        if (total_len <= (int)sizeof(stack_buf)) {
-            memcpy(stack_buf, data, len);
-            stack_buf[len] = '\n';
-            data = stack_buf;
-            len = total_len;
-        } else {
-            send_data = malloc(total_len);
-            if (!send_data) {
-                perror("malloc failed for send buffer");
-                return -1;
-            }
-            memcpy(send_data, data, len);
-            send_data[len] = '\n';
-            data = send_data;
-            len = total_len;
-        }
-    }
+    int total_sent = 0;
     
-    int sent = 0;
-    while (sent < len) {
-        int ret = send(client->sock_fd, data + sent, len - sent, flags);
+    while (total_sent < http_len) {
+        int ret = send(client->sock_fd, http_buf + total_sent, http_len - total_sent, flags);
         
         if (ret < 0) {
-            if (errno == EINTR) {
-                continue;  /* Retry */
-            }
+            if (errno == EINTR) continue;
             
             if (errno == EPIPE || errno == ECONNRESET || errno == ENOTCONN) {
-                /* Connection lost */
                 if (LOG_LEVEL >= 1) {
                     fprintf(stderr, "[WARN] Connection lost during send: %s\n",
                             strerror(errno));
                 }
-                
-                free(send_data);
                 client->is_connected = 0;
-                client->bytes_lost += (len - sent);
-                
+                client->bytes_lost += (http_len - total_sent);
                 if (client->auto_reconnect) {
                     tcp_client_reconnect(client);
                 }
-                
                 return -1;
             }
             
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                /* Socket not ready, wait with select() */
                 fd_set write_fds;
                 FD_ZERO(&write_fds);
                 FD_SET(client->sock_fd, &write_fds);
-                
                 struct timeval timeout;
                 timeout.tv_sec = 5;
                 timeout.tv_usec = 0;
-                
-                int sel_ret = select(client->sock_fd + 1, NULL, &write_fds, 
-                                     NULL, &timeout);
-                if (sel_ret > 0) {
-                    continue;  /* Retry send */
-                } else {
-                    free(send_data);
-                    return sent > 0 ? sent : -1;
-                }
+                int sel_ret = select(client->sock_fd + 1, NULL, &write_fds, NULL, &timeout);
+                if (sel_ret > 0) continue;
+                return total_sent > 0 ? total_sent : -1;
             }
             
-            /* Other error */
-            free(send_data);
-            return sent > 0 ? sent : -1;
+            return total_sent > 0 ? total_sent : -1;
         }
         
-        sent += ret;
+        total_sent += ret;
     }
     
-    /* Update statistics */
-    client->bytes_sent += sent;
+    client->bytes_sent += total_sent;
     
-    free(send_data);
+    /* Read HTTP response (non-blocking drain) */
+    char resp_buf[1024];
+    fd_set read_fds;
+    FD_ZERO(&read_fds);
+    FD_SET(client->sock_fd, &read_fds);
+    struct timeval tv;
+    tv.tv_sec = 0;
+    tv.tv_usec = 200000;
+    if (select(client->sock_fd + 1, &read_fds, NULL, NULL, &tv) > 0) {
+        recv(client->sock_fd, resp_buf, sizeof(resp_buf) - 1, 0);
+    }
     
-    return sent;
+    return total_sent;
 }
 
 /**

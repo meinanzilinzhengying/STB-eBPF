@@ -48,8 +48,10 @@ struct pkt_event_t {
     __u16 pkt_len;
     __u32 ifindex;
     __u32 pid;
+    __u8  ip_version;     /* 4 or 6 */
     __u8  payload_type;   /* 0=none, 1=HTTP_REQ, 2=HTTP_RESP */
-    __u8  _pad[3];
+    __u8  _pad[2];
+    __u16 latency_us;     /* SYN→SYN-ACK latency in microseconds */
 } __attribute__((packed));
 
 /* ==================== BPF Maps ==================== */
@@ -156,6 +158,7 @@ static __always_inline int parse_ipv4(struct __sk_buff *skb,
     evt->src_ip = ip->saddr;
     evt->dst_ip = ip->daddr;
     evt->protocol = ip->protocol;
+    evt->ip_version = 4;
 
     void *transport = (void *)ip + (ip->ihl * 4);
 
@@ -163,8 +166,8 @@ static __always_inline int parse_ipv4(struct __sk_buff *skb,
         struct tcphdr *tcp = transport;
         if ((void *)(tcp + 1) > data_end)
             return 0;
-        evt->src_port = __constant_htons(tcp->source);
-        evt->dst_port = __constant_htons(tcp->dest);
+        evt->src_port = __constant_ntohs(tcp->source);
+        evt->dst_port = __constant_ntohs(tcp->dest);
 
         /* Extract TCP flags */
         __u8 flags = 0;
@@ -193,9 +196,8 @@ static __always_inline int parse_ipv4(struct __sk_buff *skb,
             };
             __u64 *start_ts = bpf_map_lookup_elem(&syn_timestamps, &key);
             if (start_ts) {
-                /* Latency encoded in dst_port field (hack: use reserved bits) */
                 __u64 latency_ns = bpf_ktime_get_ns() - *start_ts;
-                evt->dst_port = (__u16)(latency_ns / 1000); /* Store latency_us */
+                evt->latency_us = (__u16)(latency_ns / 1000);
                 bpf_map_delete_elem(&syn_timestamps, &key);
             }
         } else if (tcp->fin || tcp->rst) {
@@ -216,8 +218,8 @@ static __always_inline int parse_ipv4(struct __sk_buff *skb,
         struct udphdr *udp = transport;
         if ((void *)(udp + 1) > data_end)
             return 0;
-        evt->src_port = __constant_htons(udp->source);
-        evt->dst_port = __constant_htons(udp->dest);
+        evt->src_port = __constant_ntohs(udp->source);
+        evt->dst_port = __constant_ntohs(udp->dest);
     } else if (ip->protocol == IPPROTO_ICMP) {
         struct icmphdr *icmp = transport;
         if ((void *)(icmp + 1) > data_end)
@@ -247,6 +249,7 @@ static __always_inline int parse_ipv6(struct __sk_buff *skb,
     evt->src_ip = *(__u32 *)&ip6->saddr.s6_addr[12];
     evt->dst_ip = *(__u32 *)&ip6->daddr.s6_addr[12];
     evt->protocol = ip6->nexthdr;
+    evt->ip_version = 6;
 
     void *transport = (void *)(ip6 + 1);
 
@@ -254,8 +257,8 @@ static __always_inline int parse_ipv6(struct __sk_buff *skb,
         struct tcphdr *tcp = transport;
         if ((void *)(tcp + 1) > data_end)
             return 0;
-        evt->src_port = __constant_htons(tcp->source);
-        evt->dst_port = __constant_htons(tcp->dest);
+        evt->src_port = __constant_ntohs(tcp->source);
+        evt->dst_port = __constant_ntohs(tcp->dest);
 
         __u8 flags = 0;
         if (tcp->syn) flags |= 0x02;
@@ -268,8 +271,8 @@ static __always_inline int parse_ipv6(struct __sk_buff *skb,
         struct udphdr *udp = transport;
         if ((void *)(udp + 1) > data_end)
             return 0;
-        evt->src_port = __constant_htons(udp->source);
-        evt->dst_port = __constant_htons(udp->dest);
+        evt->src_port = __constant_ntohs(udp->source);
+        evt->dst_port = __constant_ntohs(udp->dest);
 
     } else if (ip6->nexthdr == IPPROTO_ICMPV6) {
         evt->src_port = 0;

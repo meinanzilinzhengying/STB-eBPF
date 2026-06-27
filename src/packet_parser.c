@@ -156,6 +156,7 @@ void packet_to_flow_event(const struct pkt_event_t *pkt,
     flow->pid = pkt->pid;
     flow->ip_version = pkt->ip_version;
     flow->payload_type = pkt->payload_type;
+    flow->latency_us = pkt->latency_us;
 
     /* Protocol string */
     if (pkt->protocol == IPPROTO_TCP)
