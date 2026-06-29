@@ -1,0 +1,187 @@
+classDiagram
+    %% ==================== Data Structures ====================
+    
+    class connect_event_t {
+        +__u64 timestamp_ns
+        +__u32 pid
+        +__u32 uid
+        +__u32 saddr
+        +__u32 daddr
+        +__u16 sport
+        +__u16 dport
+        +__u16 family
+        +__u8  protocol
+        +__u8  event_type
+        +__s32 retval
+        +__u64 latency_us
+        +char comm[16]
+    }
+    note for connect_event_t "Size: 60 bytes (packed)\nARM32 compatible"
+    
+    class ring_buffer {
+        +struct connect_event_t events[4096]
+        +volatile __u32 write_idx
+        +volatile __u32 read_idx
+    }
+    note for ring_buffer "Lock-free ring buffer\nfor inter-thread communication"
+    
+    %% ==================== BPF Maps ====================
+    
+    class bpf_map_perf_map {
+        <<BPF_MAP_TYPE_PERF_EVENT_ARRAY>>
+        +key_size: sizeof(int)
+        +value_size: sizeof(int)
+        +max_entries: 64
+        +bpf_perf_event_output()
+    }
+    note for bpf_map_perf_map "Sends events from BPF\nto userspace via perf buffer"
+    
+    class bpf_map_connect_start {
+        <<BPF_MAP_TYPE_HASH>>
+        +key: __u64 (PID+TID)
+        +value: __u64 (timestamp_ns)
+        +max_entries: 1024
+        +flags: BPF_F_NO_PREALLOC
+    }
+    note for bpf_map_connect_start "Stores connect() start timestamp\nfor latency calculation"
+    
+    %% ==================== BPF Programs ====================
+    
+    class BPFProg_enter_connect {
+        <<SEC("tracepoint/syscalls/sys_enter_connect")>>
+        +read_sockaddr_in()
+        +submit_event()
+        +get_pid_tgid()
+        +get_uid_gid()
+    }
+    note for BPFProg_enter_connect "Handles sys_enter_connect\ntracepoint"
+    
+    class BPFProg_exit_connect {
+        <<SEC("tracepoint/syscalls/sys_exit_connect")>>
+        +calculate_latency()
+        +submit_event()
+        +get_pid_tgid()
+    }
+    note for BPFProg_exit_connect "Handles sys_exit_connect\ntracepoint"
+    
+    %% ==================== Userspace Modules ====================
+    
+    class Loader {
+        -struct bpf_object *obj
+        -struct bpf_program *prog_enter
+        -struct bpf_program *prog_exit
+        -struct bpf_map *perf_map
+        -struct bpf_map *connect_start_map
+        -int perf_map_fd
+        -int connect_start_map_fd
+        -int is_loaded
+        -int is_attached
+        +loader_init() struct bpf_loader*
+        +loader_load(path) int
+        +loader_attach() int
+        +loader_detach() int
+        +loader_unload() int
+        +loader_cleanup() void
+        +get_perf_map_fd() int
+        +get_connect_start_map_fd() int
+    }
+    note for Loader "Loads and manages BPF programs\nin legacy mode (no BTF/CO-RE)"
+    
+    class PerfMonitor {
+        -struct perf_buffer *pb
+        -struct perf_buffer_opts pb_opts
+        -int perf_map_fd
+        -int stop_flag
+        -pthread_t poll_thread
+        -int use_thread
+        -struct ring_buffer *ring_buf
+        -__u64 events_received
+        -__u64 events_lost
+        -__u64 poll_count
+        +perf_monitor_init(perf_map_fd, ring_buf, use_thread) struct perf_monitor*
+        +perf_monitor_start() int
+        +perf_monitor_stop() int
+        +perf_monitor_cleanup() void
+        +perf_monitor_poll_once(timeout_ms) int
+        +perf_monitor_print_stats() void
+    }
+    note for PerfMonitor "Polls perf buffer and\npushes events to ring buffer"
+    
+    class Serializer {
+        -struct connect_event_t events[32]
+        -int event_count
+        -int batch_size
+        -int flush_timeout_ms
+        -char json_buf[4096 * 32]
+        +serializer_init(batch_size, timeout_ms) struct serializer*
+        +serializer_add_event(event) int
+        +serializer_flush(json_buf, size) int
+        +serializer_needs_flush() int
+        +serializer_cleanup() void
+    }
+    note for Serializer "Serializes connect_event_t\nto JSON format"
+    
+    class TcpClient {
+        -int sock_fd
+        -char server_ip[16]
+        -int server_port
+        -int is_connected
+        -char send_buffer[65536]
+        -int send_buffer_len
+        -int reconnect_delay_ms
+        -int reconnect_retries
+        +tcp_client_init(ip, port, auto_reconnect) struct tcp_client*
+        +tcp_client_connect() int
+        +tcp_client_send_line(json) int
+        +tcp_client_reconnect() int
+        +tcp_client_is_connected() int
+        +tcp_client_cleanup() void
+        +tcp_client_print_stats() void
+    }
+    note for TcpClient "Sends serialized JSON\nto relay server via TCP"
+    
+    class Config {
+        <<compile-time constants>>
+        +RELAY_SERVER_IP = "192.168.58.130"
+        +RELAY_SERVER_PORT = 9104
+        +PROBE_ID = "stb-tyson-01"
+        +CONNECT_START_MAP_SIZE = 1024
+        +PERF_MAP_SIZE = 64
+        +RING_BUFFER_SIZE = 4096
+        +MAX_EVENTS_PER_BATCH = 32
+        +BATCH_FLUSH_TIMEOUT_MS = 1000
+        +MAX_MEMORY_LIMIT = 100MB
+        +LOG_LEVEL = 2
+        +ENABLE_LOADER = 1
+        +ENABLE_PERF_MONITOR = 1
+        +ENABLE_SERIALIZER = 1
+        +ENABLE_TCP_CLIENT = 1
+    }
+    note for Config "Compile-time configuration\nModified for PRD P0-5"
+    
+    %% ==================== Relationships ====================
+    
+    %% BPF programs write to maps
+    BPFProg_enter_connect --> bpf_map_perf_map : bpf_perf_event_output()
+    BPFProg_enter_connect --> bpf_map_connect_start : bpf_map_update_elem()
+    BPFProg_exit_connect --> bpf_map_perf_map : bpf_perf_event_output()
+    BPFProg_exit_connect --> bpf_map_connect_start : bpf_map_lookup_elem() / delete_elem()
+    
+    %% Userspace reads maps
+    Loader --> bpf_map_perf_map : bpf_map__fd()
+    Loader --> bpf_map_connect_start : bpf_map__fd()
+    
+    %% Module interactions
+    PerfMonitor --> bpf_map_perf_map : perf_buffer__poll()
+    PerfMonitor --> ring_buffer : ring_buffer_push()
+    
+    Serializer --> connect_event_t : serializes to JSON
+    
+    TcpClient --> Config : reads RELAY_SERVER_IP, RELAY_SERVER_PORT
+    
+    %% Main flow
+    Loader --> PerfMonitor : provides perf_map_fd
+    PerfMonitor --> Serializer : ring_buffer → events
+    Serializer --> TcpClient : JSON string
+    
+    note "=== Data Flow ===\nBPF → perf_buffer → ring_buffer → Serializer → TCP Client → Relay Server"

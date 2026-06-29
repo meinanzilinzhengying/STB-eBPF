@@ -1,97 +1,223 @@
-# CloudFlow eBPF Probe v3
-# Makefile for build, package, and deploy
+# Makefile - Main build file for STB eBPF Probe
+# 
+# This Makefile handles:
+# - Host BPF compilation (Clang/LLVM)
+# - Target C cross-compilation (ARMv7l, Android NDK)
+# - Linking and packaging
+# 
+# Requirements:
+# - Clang/LLVM (for BPF compilation)
+# - Android NDK (for ARMv7l cross-compilation)
+# - libbpf (for BPF loader)
+# - libelf, libz (dependencies)
 
-.PHONY: all build clean bpf install docker rpm deb build-arm32 build-arm64 build-amd64 build-static package test
+# ==================== Configuration ====================
 
-VERSION := 3.1.0
-BINARY := cloudflow-ebpf-probe
-CMD := ./cmd/probe
-GOFLAGS := -ldflags "-X github.com/meinanzilinzhengying/ebpf-probe.Version=$(VERSION) -s -w"
+# Project info
+PROJECT_NAME := stb_ebpf_probe
+VERSION := 4.2.0
 
-# ARM 32位交叉编译器 (可选，用于CGO场景)
-CC_arm32 := arm-linux-gnueabihf-gcc
+# Directories
+ROOT_DIR := $(shell pwd)
+BPF_DIR := $(ROOT_DIR)/bpf
+SRC_DIR := $(ROOT_DIR)/src
+INCLUDE_DIR := $(ROOT_DIR)/include
+BUILD_DIR := $(ROOT_DIR)/build
+OUTPUT_DIR := $(BUILD_DIR)/output
 
-all: bpf build
+# Target configuration
+TARGET_ARCH := armv7l
+TARGET_OS := android
+TARGET_KERNEL := 5.4.210
 
-# Step 1: Compile BPF objects and copy to collector
-bpf:
-	@echo "=== Compiling BPF programs ==="
-	clang -O2 -g -target bpf -D__TARGET_ARCH_x86 -c bpf/network_flow.bpf.c -o bpf/network_flow.bpf.o -I bpf
-	clang -O2 -g -target bpf -D__TARGET_ARCH_x86 -c bpf/process_exec.bpf.c -o bpf/process_exec.bpf.o -I bpf
-	clang -O2 -g -target bpf -D__TARGET_ARCH_x86 -c bpf/file_open.bpf.c -o bpf/file_open.bpf.o -I bpf
-	clang -O2 -g -target bpf -D__TARGET_ARCH_x86 -c bpf/tcp_connect.bpf.c -o bpf/tcp_connect.bpf.o -I bpf
-	clang -O2 -g -target bpf -D__TARGET_ARCH_x86 -c bpf/syscall.bpf.c -o bpf/syscall.bpf.o -I bpf
-	clang -O2 -g -target bpf -D__TARGET_ARCH_x86 -c bpf/http_trace.bpf.c -o bpf/http_trace.bpf.o -I bpf
-	clang -O2 -g -target bpf -D__TARGET_ARCH_x86 -c bpf/dns_trace.bpf.c -o bpf/dns_trace.bpf.o -I bpf
-	clang -O2 -g -target bpf -D__TARGET_ARCH_x86 -c bpf/db_trace.bpf.c -o bpf/db_trace.bpf.o -I bpf
-	clang -O2 -g -target bpf -D__TARGET_ARCH_x86 -c bpf/sched_trace.bpf.c -o bpf/sched_trace.bpf.o -I bpf
-	clang -O2 -g -target bpf -D__TARGET_ARCH_x86 -c bpf/mem_trace.bpf.c -o bpf/mem_trace.bpf.o -I bpf
-	clang -O2 -g -target bpf -D__TARGET_ARCH_x86 -c bpf/block_trace.bpf.c -o bpf/block_trace.bpf.o -I bpf
-	clang -O2 -g -target bpf -D__TARGET_ARCH_x86 -c bpf/security_trace.bpf.c -o bpf/security_trace.bpf.o -I bpf
-	for f in bpf/*.o; do llvm-strip --strip-debug "$$f" 2>/dev/null || true; done
-	cp bpf/*.o internal/collector/
+# Toolchain (Android NDK)
+ANDROID_NDK ?= $(HOME)/Android/Sdk/ndk/25.2.9519653
+NDK_TOOLCHAIN := $(ANDROID_NDK)/toolchains/llvm/prebuilt/linux-x86_64
+CC_ARM := $(NDK_TOOLCHAIN)/bin/armv7a-linux-androideabi21-clang
+CXX_ARM := $(NDK_TOOLCHAIN)/bin/armv7a-linux-androideabi21-clang++
+AR_ARM := $(NDK_TOOLCHAIN)/bin/arm-linux-androideabi-ar
+LD_ARM := $(NDK_TOOLCHAIN)/bin/arm-linux-androideabi-ld
 
-# Step 2: Build Go binary
-build: bpf
-	go build $(GOFLAGS) -o $(BINARY) $(CMD)
+# Host tools
+CC_HOST := clang
+CC := $(CC_HOST)
+BPF_CC := clang
+BPF_CFLAGS := -target bpf -O2 -g -Wall -Werror
+BPF_CFLAGS += -D__TARGET_ARCH_arm -I$(INCLUDE_DIR)
+BPF_CFLAGS += -I/usr/include/bpf
+BPF_CFLAGS += -fno-stack-protector
 
-# Build for Linux amd64
-build-amd64: bpf
-	GOOS=linux GOARCH=amd64 go build $(GOFLAGS) -o $(BINARY)-amd64 $(CMD)
+# C flags for target
+CFLAGS := -O2 -Wall -Wextra -Werror
+CFLAGS += -D_GNU_SOURCE -DANDROID -D__ANDROID_API__=21
+CFLAGS += -I$(INCLUDE_DIR) -I$(SRC_DIR)
+CFLAGS += -static  # Static linking for Android
+CFLAGS += -fPIE -pie  # Position Independent Executable
+CFLAGS += -fstack-protector-strong
+CFLAGS += -Wno-unused-variable -Wno-unused-function
 
-# Build for Linux arm64
-build-arm64: bpf
-	GOOS=linux GOARCH=arm64 go build $(GOFLAGS) -o $(BINARY)-arm64 $(CMD)
+# LDFLAGS
+LDFLAGS := -static
+LDFLAGS += -lbpf -lelf -lz  # BPF libraries
+LDFLAGS += -llog  # Android logging
+LDFLAGS += -pthread
 
-# Build for Linux arm32 (armv7-a, 机顶盒/嵌入式专用)
-build-arm32: bpf
-	CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 go build $(GOFLAGS) -o $(BINARY)-arm32 $(CMD)
-	arm-linux-gnueabihf-strip $(BINARY)-arm32 2>/dev/null || true
-	upx --best $(BINARY)-arm32 2>/dev/null || true
-	@echo "ARM32 binary size: $$(du -h $(BINARY)-arm32 | cut -f1)"
+# ==================== Source Files ====================
 
-# Build static binary
-build-static: bpf
-	CGO_ENABLED=0 GOOS=linux go build $(GOFLAGS) -a -installsuffix cgo -o $(BINARY)-static $(CMD)
+# BPF source files
+BPF_SRCS := $(wildcard $(BPF_DIR)/*.bpf.c)
+BPF_OBJS := $(patsubst $(BPF_DIR)/%.bpf.c,$(BUILD_DIR)/%.bpf.o,$(BPF_SRCS))
 
-# Docker image
-docker:
-	docker build -t cloudflow-ebpf-probe:$(VERSION) -f deploy/docker/Dockerfile .
+# Userspace source files
+USR_SRCS := $(wildcard $(SRC_DIR)/*.c)
+USR_OBJS := $(patsubst $(SRC_DIR)/%.c,$(BUILD_DIR)/%.o,$(USR_SRCS))
 
-# Package
-package: build-static
-	mkdir -p dist/$(BINARY)-$(VERSION)
-	cp $(BINARY)-static dist/$(BINARY)-$(VERSION)/$(BINARY)
-	cp deploy/install/install.sh dist/$(BINARY)-$(VERSION)/
-	cp deploy/systemd/cloudflow-ebpf-probe.service dist/$(BINARY)-$(VERSION)/
-	cp config/config.yaml dist/$(BINARY)-$(VERSION)/
-	cp README.md dist/$(BINARY)-$(VERSION)/
-	tar czf dist/$(BINARY)-$(VERSION)-linux-amd64.tar.gz -C dist $(BINARY)-$(VERSION)
+# ==================== Build Targets ====================
 
-# Package for ARM32 (机顶盒/嵌入式专用)
-package-arm32: build-arm32
-	mkdir -p dist/$(BINARY)-$(VERSION)-arm32
-	cp $(BINARY)-arm32 dist/$(BINARY)-$(VERSION)-arm32/$(BINARY)
-	cp deploy/install/install.sh dist/$(BINARY)-$(VERSION)-arm32/
-	cp deploy/systemd/cloudflow-ebpf-probe.service dist/$(BINARY)-$(VERSION)-arm32/
-	cp config/collector.yaml dist/$(BINARY)-$(VERSION)-arm32/
-	cp README.md dist/$(BINARY)-$(VERSION)-arm32/
-	tar czf dist/$(BINARY)-$(VERSION)-linux-arm32.tar.gz -C dist $(BINARY)-$(VERSION)-arm32
+.PHONY: all clean bpf userspace help install deploy
 
-# Package all architectures
-package-all: package package-arm32
-	@echo "All packages built in dist/"
+# Default target
+all: bpf userspace
 
-# Install locally
-install: build
-	install -Dm755 $(BINARY) /usr/local/bin/$(BINARY)
-	install -Dm644 deploy/systemd/cloudflow-ebpf-probe.service /etc/systemd/system/
+# Help
+help:
+	@echo "STB eBPF Probe Build System"
+	@echo ""
+	@echo "Targets:"
+	@echo "  all        - Build everything (default)"
+	@echo "  bpf        - Compile BPF programs only"
+	@echo "  userspace  - Compile userspace program only"
+	@echo "  clean      - Remove build artifacts"
+	@echo "  install    - Install to target (requires ADB)"
+	@echo "  deploy     - Deploy to target (alias for install)"
+	@echo "  help       - Show this help"
+	@echo ""
+	@echo "Variables:"
+	@echo "  ANDROID_NDK   - Path to Android NDK (default: $(ANDROID_NDK))"
+	@echo "  TARGET_ARCH   - Target architecture (default: $(TARGET_ARCH))"
+	@echo ""
 
-# Clean
+# Create build directories
+$(BUILD_DIR):
+	mkdir -p $(BUILD_DIR)
+	mkdir -p $(OUTPUT_DIR)
+
+# ==================== BPF Compilation ====================
+
+# Compile BPF C file to object file
+$(BUILD_DIR)/%.bpf.o: $(BPF_DIR)/%.bpf.c | $(BUILD_DIR)
+	@echo "[BPF] Compiling $<..."
+	$(BPF_CC) $(BPF_CFLAGS) -c $< -o $@
+	@echo "[BPF] Generated $@"
+
+# BPF target: compile all BPF programs
+bpf: $(BPF_OBJS)
+	@echo "[BPF] All BPF programs compiled successfully"
+	@ls -la $(BUILD_DIR)/*.bpf.o
+
+# ==================== Userspace Compilation ====================
+
+# Compile userspace C file to object file (host)
+$(BUILD_DIR)/%.o: $(SRC_DIR)/%.c | $(BUILD_DIR)
+	@echo "[USR] Compiling (host) $<..."
+	$(CC_HOST) $(CFLAGS) -c $< -o $@
+
+# Cross-compile userspace C file to object file (ARM)
+$(BUILD_DIR)/%-arm.o: $(SRC_DIR)/%.c | $(BUILD_DIR)
+	@echo "[USR] Cross-compiling (ARM) $<..."
+	$(CC_ARM) $(CFLAGS) -c $< -o $@
+
+# Userspace target (host build)
+userspace-host: $(USR_OBJS)
+	@echo "[USR] Linking (host)..."
+	$(CC_HOST) -o $(OUTPUT_DIR)/$(PROJECT_NAME) $(USR_OBJS) $(LDFLAGS)
+	@echo "[USR] Built: $(OUTPUT_DIR)/$(PROJECT_NAME)"
+
+# Userspace target (ARM cross-compile)
+userspace: $(patsubst $(SRC_DIR)/%.c,$(BUILD_DIR)/%-arm.o,$(USR_SRCS))
+	@echo "[USR] Linking (ARM)..."
+	$(CC_ARM) -o $(OUTPUT_DIR)/$(PROJECT_NAME) \
+		$(patsubst $(SRC_DIR)/%.c,$(BUILD_DIR)/%-arm.o,$(USR_SRCS)) \
+		$(LDFLAGS)
+	@echo "[USR] Built: $(OUTPUT_DIR)/$(PROJECT_NAME)"
+	@echo "[USR] Binary info:"
+	@file $(OUTPUT_DIR)/$(PROJECT_NAME) || true
+	@$(NDK_TOOLCHAIN)/bin/arm-linux-androideabi-readelf -h $(OUTPUT_DIR)/$(PROJECT_NAME) || true
+
+# ==================== Clean ====================
+
+# Clean build artifacts
 clean:
-	rm -f $(BINARY) $(BINARY)-* bpf/*.bpf.o
-	rm -rf dist/
+	@echo "[CLEAN] Removing build directory..."
+	rm -rf $(BUILD_DIR)
+	@echo "[CLEAN] Done"
 
-# Test
-test:
-	go test ./...
+# ==================== Install/Deploy ====================
+
+# Install to target via ADB
+install: userspace
+	@echo "[INSTALL] Installing to target..."
+	@if [ -z "$(TARGET_DEVICE)" ]; then \
+		echo "Error: TARGET_DEVICE not set. Usage: make install TARGET_DEVICE=<serial>"; \
+		exit 1; \
+	fi
+	adb -s $(TARGET_DEVICE) push $(OUTPUT_DIR)/$(PROJECT_NAME) /data/local/tmp/
+	adb -s $(TARGET_DEVICE) shell "chmod +x /data/local/tmp/$(PROJECT_NAME)"
+	@echo "[INSTALL] Done"
+
+# Deploy (alias for install)
+deploy: install
+
+# ==================== Test ====================
+
+# Test BPF compilation (host)
+test-bpf: bpf
+	@echo "[TEST] Testing BPF object files..."
+	@for obj in $(BUILD_DIR)/*.bpf.o; do \
+		echo "Checking $$obj..."; \
+		llvm-objdump -h $$obj || true; \
+	done
+
+# ==================== Dependencies ====================
+
+# Print dependencies
+deps:
+	@echo "Dependencies:"
+	@echo "  Clang/LLVM: $(shell which $(CC_HOST) >/dev/null 2>&1 && echo "OK" || echo "MISSING")"
+	@echo "  Android NDK: $(shell test -d $(ANDROID_NDK) && echo "OK" || echo "MISSING")"
+	@echo "  libbpf: $(shell pkg-config --exists libbpf && echo "OK" || echo "MISSING")"
+	@echo "  libelf: $(shell pkg-config --exists libelf && echo "OK" || echo "MISSING")"
+	@echo "  libz: $(shell pkg-config --exists zlib && echo "OK" || echo "MISSING")"
+
+# ==================== Docker Build (optional) ====================
+
+# Docker build for reproducible environment
+docker-build:
+	docker build -t stb-ebpf-builder -f Dockerfile .
+	docker run --rm -v $(ROOT_DIR):/src stb-ebpf-builder
+
+# ==================== Package ====================
+
+# Package for distribution
+package: userspace
+	@echo "[PACKAGE] Creating package..."
+	mkdir -p $(OUTPUT_DIR)/package
+	cp $(OUTPUT_DIR)/$(PROJECT_NAME) $(OUTPUT_DIR)/package/
+	cp scripts/deploy.sh $(OUTPUT_DIR)/package/
+	cd $(OUTPUT_DIR)/package && tar czf ../$(PROJECT_NAME)-$(VERSION)-$(TARGET_ARCH).tar.gz *
+	@echo "[PACKAGE] Created: $(OUTPUT_DIR)/$(PROJECT_NAME)-$(VERSION)-$(TARGET_ARCH).tar.gz"
+
+# ==================== Debug ====================
+
+# Debug info
+debug:
+	@echo "Project: $(PROJECT_NAME)"
+	@echo "Version: $(VERSION)"
+	@echo "Root dir: $(ROOT_DIR)"
+	@echo "BPF sources: $(BPF_SRCS)"
+	@echo "BPF objects: $(BPF_OBJS)"
+	@echo "Userspace sources: $(USR_SRCS)"
+	@echo "Userspace objects: $(USR_OBJS)"
+	@echo "Output: $(OUTPUT_DIR)/$(PROJECT_NAME)"
+
+# ==================== End of Makefile ====================

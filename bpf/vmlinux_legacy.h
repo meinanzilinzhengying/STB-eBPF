@@ -151,9 +151,9 @@ struct trace_entry {
     ((__u64)bpf_ktime_get_ns())
 #endif
 
-#ifndef bpf_probe_read
-#define bpf_probe_read(dst, size, src)                             \
-    bpf_probe_read(dst, size, src)
+#ifndef bpf_probe_read_user
+#define bpf_probe_read_user(dst, size, src)                             \
+    bpf_probe_read_user(dst, size, src)
 #endif
 
 #ifndef bpf_perf_event_output
@@ -202,68 +202,6 @@ static inline __u32 ntohl(__u32 netlong) {
     ((unsigned char *)&ip)[1], \
     ((unsigned char *)&ip)[2], \
     ((unsigned char *)&ip)[3]
-
-/* ==================== Network Protocol Headers ==================== */
-
-/**
- * struct iphdr - IPv4 header (20 bytes, no options)
- * 
- * Standard IPv4 header format.
- */
-struct iphdr {
-    __u8  ver_ihl;        /* version(4) + ihl(4) */
-    __u8  tos;
-    __u16 tot_len;
-    __u16 id;
-    __u16 frag_off;
-    __u8  ttl;
-    __u8  protocol;
-    __u16 check;
-    __u32 saddr;
-    __u32 daddr;
-};
-
-/**
- * struct tcphdr - TCP header (20 bytes, no options)
- * 
- * Standard TCP header format.
- */
-struct tcphdr {
-    __u16 source;
-    __u16 dest;
-    __u32 seq;
-    __u32 ack_seq;
-    __u16 data_offset_flags;  /* data_offset(4) + reserved(3) + flags(9) */
-    __u16 window;
-    __u16 check;
-    __u16 urg_ptr;
-};
-
-/**
- * struct udphdr - UDP header (8 bytes)
- * 
- * Standard UDP header format.
- */
-struct udphdr {
-    __u16 source;
-    __u16 dest;
-    __u16 len;
-    __u16 check;
-};
-
-/**
- * struct dnshdr - DNS header (12 bytes)
- * 
- * Standard DNS header format.
- */
-struct dnshdr {
-    __u16 id;
-    __u16 flags;
-    __u16 qdcount;
-    __u16 ancount;
-    __u16 nscount;
-    __u16 arcount;
-};
 
 /* ==================== Memory Operations ==================== */
 

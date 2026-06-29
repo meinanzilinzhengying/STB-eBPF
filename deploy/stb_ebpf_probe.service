@@ -1,0 +1,204 @@
+# stb_ebpf_probe.service - Android init script for STB eBPF Probe
+#
+# This script is used to start the probe on Android init.
+#
+# Installation:
+#   Push to /system/etc/init.d/ (if init.d supported)
+#   Or integrate into init.rc (requires ROM modification)
+#
+# Note: Android init system varies by version and vendor.
+#       This script provides a generic template.
+
+# ==================== Configuration ====================
+
+# Binary location
+PROBE_BIN="/data/local/tmp/stb_ebpf_probe"
+
+# Log file
+PROBE_LOG="/data/local/tmp/stb_ebpf_probe.log"
+
+# PID file
+PROBE_PID="/data/local/tmp/stb_ebpf_probe.pid"
+
+# User (Android)
+PROBE_USER="root"
+
+# ==================== Functions ====================
+
+probe_start() {
+    echo "Starting STB eBPF Probe..."
+    
+    # Check if already running
+    if [ -f "$PROBE_PID" ]; then
+        local pid=$(cat "$PROBE_PID" 2>/dev/null)
+        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+            echo "Probe is already running (PID: $pid)"
+            return 1
+        fi
+    fi
+    
+    # Check binary
+    if [ ! -x "$PROBE_BIN" ]; then
+        echo "Error: Binary not found or not executable: $PROBE_BIN"
+        return 1
+    fi
+    
+    # Set environment
+    export PATH=/sbin:/vendor/bin:/system/sbin:/system/bin:/system/xbin
+    export LD_LIBRARY_PATH=/vendor/lib:/system/lib
+    
+    # Set resource limits
+    ulimit -n 4096 2>/dev/null || true
+    ulimit -c 0 2>/dev/null || true
+    
+    # Start probe
+    "$PROBE_BIN" > "$PROBE_LOG" 2>&1 &
+    local pid=$!
+    
+    # Save PID
+    echo $pid > "$PROBE_PID"
+    
+    # Wait for start
+    sleep 2
+    
+    # Verify
+    if kill -0 "$pid" 2>/dev/null; then
+        echo "Probe started successfully (PID: $pid)"
+        return 0
+    else
+        echo "Error: Probe failed to start"
+        rm -f "$PROBE_PID"
+        return 1
+    fi
+}
+
+probe_stop() {
+    echo "Stopping STB eBPF Probe..."
+    
+    # Check PID file
+    if [ ! -f "$PROBE_PID" ]; then
+        echo "Probe is not running (no PID file)"
+        return 1
+    fi
+    
+    local pid=$(cat "$PROBE_PID" 2>/dev/null)
+    if [ -z "$pid" ]; then
+        echo "Error: Invalid PID file"
+        rm -f "$PROBE_PID"
+        return 1
+    fi
+    
+    # Check if running
+    if ! kill -0 "$pid" 2>/dev/null; then
+        echo "Probe is not running (stale PID file)"
+        rm -f "$PROBE_PID"
+        return 1
+    fi
+    
+    # Stop probe
+    kill "$pid" 2>/dev/null
+    
+    # Wait for stop
+    local count=0
+    while kill -0 "$pid" 2>/dev/null && [ $count -lt 10 ]; do
+        sleep 1
+        count=$((count + 1))
+    done
+    
+    # Force kill if still running
+    if kill -0 "$pid" 2>/dev/null; then
+        echo "Force killing probe..."
+        kill -9 "$pid" 2>/dev/null
+        sleep 1
+    fi
+    
+    # Cleanup
+    rm -f "$PROBE_PID"
+    
+    echo "Probe stopped"
+    return 0
+}
+
+probe_restart() {
+    echo "Restarting STB eBPF Probe..."
+    probe_stop || true
+    sleep 2
+    probe_start
+}
+
+probe_status() {
+    echo "STB eBPF Probe Status:"
+    echo "  Binary: $PROBE_BIN"
+    
+    if [ ! -f "$PROBE_PID" ]; then
+        echo "  Status: Not running (no PID file)"
+        return 1
+    fi
+    
+    local pid=$(cat "$PROBE_PID" 2>/dev/null)
+    if [ -z "$pid" ]; then
+        echo "  Status: Not running (invalid PID file)"
+        return 1
+    fi
+    
+    if kill -0 "$pid" 2>/dev/null; then
+        echo "  Status: Running (PID: $pid)"
+        
+        # Resource usage
+        if [ -f "/proc/$pid/stat" ]; then
+            local cpu=$(awk '{print $14+$15}' /proc/$pid/stat 2>/dev/null || echo "N/A")
+            local mem=$(awk '{print $24*4}' /proc/$pid/statm 2>/dev/null || echo "N/A")
+            echo "  CPU: $cpu"
+            echo "  Memory: ${mem}K"
+        fi
+        
+        # Recent log
+        if [ -f "$PROBE_LOG" ]; then
+            echo "  Recent log:"
+            tail -5 "$PROBE_LOG" 2>/dev/null | sed 's/^/    /'
+        fi
+        
+        return 0
+    else
+        echo "  Status: Not running (stale PID file)"
+        return 1
+    fi
+}
+
+probe_log() {
+    echo "STB eBPF Probe Log:"
+    if [ ! -f "$PROBE_LOG" ]; then
+        echo "  Log file not found: $PROBE_LOG"
+        return 1
+    fi
+    
+    echo "  (last 20 lines)"
+    tail -20 "$PROBE_LOG" 2>/dev/null
+    return 0
+}
+
+# ==================== Main ====================
+
+case "$1" in
+    start)
+        probe_start
+        ;;
+    stop)
+        probe_stop
+        ;;
+    restart)
+        probe_restart
+        ;;
+    status)
+        probe_status
+        ;;
+    log)
+        probe_log
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|restart|status|log}"
+        exit 1
+        ;;
+esac
+
+exit $?
